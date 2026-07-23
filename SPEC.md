@@ -53,7 +53,7 @@ Rows 1–4 are headers. Data begins at **row 5**.
 | D | Time | Usually a Date/time value, sometimes free text |
 | E | Event name | `R1 Men's Football: \nDLSU vs UE` — contains newlines |
 | F | Venue | May be merged across rows |
-| G | `Game day` | `Yes`/`No` — **filter key**, see §3.3 |
+| G | `Game day` | `Yes`/`No` — **not used for filtering**, see §3.3 |
 | H | `HN` | Deliverable flag |
 | I | `Livetweet` | Deliverable flag |
 | J | `HT` | Deliverable flag |
@@ -117,7 +117,7 @@ Column B is typed by hand and Google Sheets coerces inconsistently. Three cases:
 | Number | `15`, `19` | Use directly as day of month |
 | Empty string | (continuation row) | **Forward-fill** from the last non-empty value |
 
-Empty cells occur because **date cells are merged across multi-event days**. Confirmed merges in the September tab: `B8:B9`, `B13:B15`, `B16:B17`. `getValues()` returns the value in the top-left cell and `""` for every other cell in the merge.
+Empty cells occur because **date cells are merged across multi-event days**. `getValues()` returns the value in the top-left cell and `""` for every other cell in the merge — see the live sheet's currently-populated test tab (`TEST_MONTH` in Main.js, see §9) for confirmed merge ranges.
 
 Implementation:
 
@@ -148,13 +148,12 @@ With `SEASON_START_YEAR=2025`, `SEASON_START_MONTH=9`: September–December → 
 
 ### 3.3 Event filtering
 
-An event qualifies for a roll call if **all** hold:
+An event qualifies for a roll call if **both** hold:
 
 1. Resolved date == today + `LEAD_DAYS` (default: tomorrow), in Asia/Manila
-2. Column G (`Game day`) is `Yes`, case-insensitive
-3. Column E is non-empty
+2. Column E's event name resolves to an identifiable opponent per §3.4 (i.e. the `vs`/`v` split has exactly one side reading as `DLSU`)
 
-Non-game events (press conferences, opening ceremonies, `Light of Hope` show) have `Game day = No` and are **skipped entirely**, per requirements. They lack opponents and recap staffers and do not fit the template.
+Column G (`Game day`) is **not** used as a filter — in practice it does not reliably distinguish real games from non-game entries, so an unambiguous opponent match is the source of truth instead. Non-game events (press conferences, opening ceremonies, `Light of Hope` show) have no `vs`/`v` opponent split and are **skipped entirely** as a natural consequence of §3.4's fallback behaviour, not because of an explicit flag check.
 
 ### 3.4 Event name parsing — column E
 
@@ -167,7 +166,7 @@ R1 Men's Football: \nDLSU vs UE
 
 Steps:
 1. Normalise: replace `\n` with a space, collapse repeated whitespace, trim
-2. Split on the **first** `:` → left = sport (`R1 Men's Football`), right = matchup (`DLSU vs UE`)
+2. Split on the **last** `:` → left = sport (`R1 Men's Football`), right = matchup (`DLSU vs UE`). The last colon, not the first: the sport prefix is sometimes typed with an internal colon (e.g. `R1: Men's Basketball: DLSU vs ADMU`), but the matchup never contains one.
 3. Split the matchup on `vs` or `v` (word-boundary, case-insensitive) → `DLSU`, `UE`
 4. Identify the opponent as the side that is **not** DLSU (do not assume DLSU is always first)
 
@@ -193,6 +192,8 @@ If a cell is empty and `SHOW_UNASSIGNED_WARNING` is TRUE, emit a warning line (�
 
 Usually a Date/time value → format as `h:mm a` (e.g. `4:30 PM`), lowercased to match house style (`4:30 pm`).
 
+**Format with the spreadsheet's timezone, not the script's.** `getValues()` builds a time-only cell's `Date` against Google Sheets' 1899 epoch using the *spreadsheet's* timezone, whose historical LMT offset differs from the modern one by a few odd minutes. Reading it back with `.getHours()` (which uses the *script's* timezone) leaks that difference in as a skew — observed as `4:00 PM` coming out `4:23 pm`. Use `Utilities.formatDate(raw, SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), 'h:mm a')`: building and formatting the instant with the same zone cancels the offset exactly.
+
 Sometimes free text, e.g.:
 ```
 2PM (Mass)
@@ -201,12 +202,13 @@ Sometimes free text, e.g.:
 ```
 When the value is not a Date, **pass the raw string through** with newlines collapsed to spaces. Do not attempt to parse it. (In practice these appear on non-game rows, which are filtered out anyway — but handle it defensively.)
 
-### 3.7 Deliverables — columns H–O
+### 3.7 Deliverables — columns G–O
 
 Collect the columns marked `Yes` and map to display labels:
 
 ```js
 const DELIVERABLE_LABELS = {
+  G: 'Game Day',
   H: 'HN',
   I: 'Livetweet',
   J: 'HT',
@@ -218,7 +220,7 @@ const DELIVERABLE_LABELS = {
 };
 ```
 
-Note two renames from the sheet headers: `Album` → `Album Caption`, `Recap Article` → `Recap`. Column G (`Game day`) is a filter flag, **not** a deliverable — exclude it from this list.
+Note two renames from the sheet headers: `Album` → `Album Caption`, `Recap Article` → `Recap`. Column G (`Game day`) **is** included in this list as `Game Day` — note it is still **not** used for event filtering (§3.3); the two roles are independent.
 
 Join with `, ` in column order.
 
@@ -286,6 +288,8 @@ Maintain a hidden tab `_log`:
 
 Before sending, check whether that `EventKey` already appears with status `SENT`. If so, skip and log `SKIPPED_DUPLICATE`.
 
+A **dry run must never write `SENT`** — doing so would poison the ledger and make a later real send skip the event as a duplicate. Dry runs log the distinct status `DRY_RUN`, which the duplicate check ignores (only `SENT` counts). So the recognised statuses are `SENT`, `SKIPPED_DUPLICATE`, `DRY_RUN`, and `ERROR`.
+
 Create the tab automatically if missing. Hide it from normal view.
 
 ---
@@ -332,11 +336,11 @@ Build and verify one step at a time. Do not proceed until the current step works
 
 | # | Deliverable | Verification |
 |---|---|---|
-| 1 | `testRead()` — log first 20 rows of the September tab | Execution log shows raw values |
+| 1 | `testRead()` — log first 20 rows of the `TEST_MONTH` tab | Execution log shows raw values |
 | 2 | Config + Staffers readers | Log parsed config object and staffer map |
-| 3 | Date resolver with forward-fill | Log resolved date per row; confirm rows 9, 14, 15, 17 inherit correctly |
-| 4 | Event filter (tomorrow + `Game day = Yes`) | Log matched rows for a hardcoded test date |
-| 5 | Event name parser (sport / opponent split) | Log structured objects for all September rows |
+| 3 | Date resolver with forward-fill | Log resolved date per row; confirm merged-cell rows inherit correctly |
+| 4 | Event filter (tomorrow + identifiable opponent) | Log matched rows for a hardcoded test date |
+| 5 | Event name parser (sport / opponent split) | Log structured objects for all `TEST_MONTH` rows |
 | 6 | Deliverables + staffer resolution | Log full event objects with handles |
 | 7 | Message renderer | Log the exact string that would be sent |
 | 8 | Telegram send | Set `DRY_RUN=FALSE`, confirm in test group |
@@ -344,7 +348,7 @@ Build and verify one step at a time. Do not proceed until the current step works
 | 10 | Error handling + notification | Force an exception, confirm alert arrives |
 | 11 | Time-driven trigger | Wait one night |
 
-For steps 3–7, add a `testWithDate(dateString)` helper that runs the pipeline against an arbitrary date. September 2025 data is the natural fixture: **Sept 27** is the best test case (three events — two basketball, one football — with merged date cells across rows 13–15).
+For steps 3–7, `testEventFilter`/`testFullEventBuild`/`testMessageRender` (Main.js) default to the `TEST_DATE` constant since the Apps Script editor's Run button can't pass arguments; pass an explicit `dateString` to try a different date without editing code. `TEST_MONTH`/`TEST_DATE` in Main.js point at whichever month tab currently holds populated sample game data — update those two constants (and re-push) when switching to a different reference tab. A day with multiple events and at least one merged date cell across rows makes the best fixture.
 
 ---
 
