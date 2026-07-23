@@ -272,6 +272,24 @@ Unassigned warnings replace the corresponding `Recap:`/`Livetweet:` line rather 
 
 Send **separate messages** per event, not one combined digest. Two games on the same day have different staffers, times, and venues; separate messages are easier to act on and to reply to.
 
+### 4.4 Per-sport routing (Telegram forum topics)
+
+Roll calls are **not** all sent to one chat. Each sport has its own Telegram group, and each group is a **forum** whose tabs are topics (threads). Roll calls post into that group's **Roll Call** topic. Selecting a topic requires two values on the Telegram `sendMessage` call: `chat_id` (the group) and `message_thread_id` (the topic).
+
+A `Groups` tab maps sport → destination:
+
+| A (`Sport keyword`) | B (`Chat ID`) | C (`Thread ID`) | D (`Notes`) |
+|---|---|---|---|
+| `Basketball` | `-100…` | `<Roll Call topic id>` | covers Men's, Women's, 3x3 |
+| `Football` | `-100…` | `<Roll Call topic id>` | |
+
+- **Row order is priority.** For each event, the first row whose keyword (case-insensitive) is a substring of the event's `sport` wins. Put specific keywords (e.g. `3x3`) above general ones (e.g. `Basketball`) if a sub-variant ever needs a different topic; otherwise the general row covers all its variants.
+- Rows missing a keyword or Chat ID are skipped (safe as templates).
+- **Unmapped sport → admin/fallback chat.** `TELEGRAM_CHAT_ID` (Script Properties) is the admin chat: error alerts (§6) and any roll call with no matching Groups row go here, the latter with an appended warning so it's never silently lost.
+- `Thread ID` blank ⇒ send with no `message_thread_id` (posts to a non-forum group's main view).
+
+`setupGroupsTab()` creates and seeds the tab; `harvestChatIds()` reads chat and topic IDs from the bot's `getUpdates` for pasting into it (bot must be a group admin or have privacy mode off to see the messages).
+
 ---
 
 ## 5. Idempotency

@@ -27,6 +27,7 @@ function runRollCall_() {
  */
 function sendMatchingEvents_(targetDate, config) {
   const stafferMap = getStafferMap();
+  const routing = { groupMap: getGroupMap(), adminChatId: getAdminChatId_() };
   const monthName = MONTH_NAMES[targetDate.month - 1];
 
   const events = parseMonthEvents(readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_());
@@ -38,7 +39,7 @@ function sendMatchingEvents_(targetDate, config) {
 
   matching.forEach((event) => {
     try {
-      sendEventRollCall_(event, stafferMap, config);
+      sendEventRollCall_(event, stafferMap, config, routing);
     } catch (err) {
       // §6 — guard individually so one bad event doesn't kill the whole run.
       logStatus_(buildEventKey_(event), 'ERROR', String(err));
@@ -47,7 +48,7 @@ function sendMatchingEvents_(targetDate, config) {
   });
 }
 
-function sendEventRollCall_(event, stafferMap, config) {
+function sendEventRollCall_(event, stafferMap, config, routing) {
   const eventKey = buildEventKey_(event);
   if (hasBeenSent_(eventKey)) {
     logStatus_(eventKey, 'SKIPPED_DUPLICATE');
@@ -55,20 +56,27 @@ function sendEventRollCall_(event, stafferMap, config) {
     return;
   }
 
-  const message = renderMessage_(event, stafferMap, config);
+  // Route to the sport's group + Roll Call topic (Groups tab). An unmapped
+  // sport falls back to the admin chat with a flag appended, so nothing is lost.
+  const target = resolveTarget_(event, routing.groupMap, routing.adminChatId);
+  let message = renderMessage_(event, stafferMap, config);
+  if (!target.matched) {
+    message += `\n\n(⚠️ No Groups mapping for sport "${event.sport}" — posted to the admin chat. Add a row in the Groups tab.)`;
+  }
+  const dest = target.chatId + (target.threadId ? '/' + target.threadId : '');
 
   // A dry run must NOT record SENT — that would poison the idempotency
   // ledger (§5) and make a later real send skip the event as a duplicate.
   // Log a distinct DRY_RUN status, which hasBeenSent_ does not count.
   if (config.DRY_RUN) {
-    Logger.log(`[DRY RUN] Would send:\n${message}`);
-    logStatus_(eventKey, 'DRY_RUN');
+    Logger.log(`[DRY RUN] → ${dest} (matched=${target.matched})\n${message}`);
+    logStatus_(eventKey, 'DRY_RUN', dest);
     return;
   }
 
-  sendTelegramMessage_(message, { parseMode: 'HTML' });
-  logStatus_(eventKey, 'SENT');
-  Logger.log(`SENT: ${eventKey}`);
+  sendTelegramMessage_(message, { parseMode: 'HTML', chatId: target.chatId, threadId: target.threadId });
+  logStatus_(eventKey, 'SENT', dest);
+  Logger.log(`SENT: ${eventKey} → ${dest}`);
 }
 
 /** §7 — "tomorrow" (or LEAD_DAYS ahead) computed in Asia/Manila, never the runtime default. */
@@ -210,6 +218,28 @@ function testMessageRender(dateString) {
   const matching = filterEventsForDate_(events, targetDate);
 
   matching.forEach((e) => Logger.log(renderMessage_(e, stafferMap, config)));
+}
+
+/**
+ * Verify per-sport routing for a date WITHOUT sending: logs the group +
+ * topic each matched game would post to (and whether the sport was mapped).
+ */
+function testRouting(dateString) {
+  dateString = dateString || TEST_DATE;
+  const config = getConfig();
+  const groupMap = getGroupMap();
+  const adminChatId = getAdminChatId_();
+  const targetDate = parseTargetDateString_(dateString);
+  const monthName = MONTH_NAMES[targetDate.month - 1];
+  const events = parseMonthEvents(readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_());
+  const matching = filterEventsForDate_(events, targetDate);
+
+  matching.forEach((e) => {
+    const t = resolveTarget_(e, groupMap, adminChatId);
+    Logger.log(
+      `${e.sport} (${e.opponent}) → chatId=${t.chatId} threadId=${t.threadId || '(none)'} matched=${t.matched} keyword=${t.keyword || '-'}`
+    );
+  });
 }
 
 /**

@@ -13,6 +13,7 @@ Automated Telegram roll call for **The LaSallian's** UAAP sports coverage. Every
 - Runs **once a night, ~7:00 PM Manila time**, unattended.
 - Looks at **tomorrow's** date (configurable) and finds every game on the tracker for that day.
 - Posts a formatted roll call per game: sport, matchup, time, venue, assigned Recap/Livetweet staffers (resolved to Telegram handles), deliverables, and reminders.
+- **Routes each roll call to its sport's own Telegram group** (Basketball, Football, …) — specifically into that group's **Roll Call** topic — so nothing gets collated into one messy chat.
 - **Never double-posts** — it keeps a log and skips anything already sent.
 - **Fails loudly** — if something breaks, it sends an error message to the same Telegram group instead of failing silently.
 
@@ -65,10 +66,11 @@ TLS-Automated-Roll-Call/
     ├── Main.js              entry point, nightly run, trigger install, test helpers
     ├── Config.js            Config tab reader + setupConfigTab()
     ├── Staffers.js          Staffers tab reader (name → handle)
+    ├── Groups.js            Groups tab reader + per-sport routing + setupGroupsTab()
     ├── Sheets.js            sheet/timezone access helpers
     ├── Parser.js            all parsing rules (dates, names, times, deliverables)
     ├── Template.js          message rendering + HTML escaping
-    ├── Telegram.js          Telegram send + error notify
+    ├── Telegram.js          Telegram send (to any chat/topic) + error notify + harvestChatIds()
     └── Log.js               _log tab: idempotency ledger + error trail
 ```
 
@@ -89,6 +91,9 @@ Key/Value pairs the bot reads live on every run. Run `setupConfigTab()` once to 
 
 ### `Staffers` tab
 `Name | Handle`, one per row (row 1 is the header). Names must match what's typed in columns Q/R (case-insensitive, whitespace-trimmed). Add staffers by adding rows — no code change. See §7.
+
+### `Groups` tab
+`Sport keyword | Chat ID | Thread ID | Notes`. Maps each sport to the Telegram group + Roll Call topic its roll calls post to. **Add a sport = add a row** (read live each run, no code). Run `setupGroupsTab()` once to create it with headers and an example. See §7.1 for how to fill it.
 
 ### `_log` tab (hidden, auto-created)
 `Timestamp | EventKey | Status | Detail`. Statuses: `SENT`, `SKIPPED_DUPLICATE`, `DRY_RUN`, `ERROR`. This is the idempotency ledger and the error trail — check it first when debugging.
@@ -111,6 +116,7 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 |---|---|
 | **Pause the bot** | Config tab → set `DRY_RUN` to `TRUE`. It will log but never post. Set back to `FALSE` to resume. |
 | **Add / change a staffer** | Staffers tab → add or edit a `Name | Handle` row. The name must match what's typed in the Recap/Livetweet columns. |
+| **Add a sport / change its group** | Groups tab → add or edit a row (`Sport keyword | Chat ID | Thread ID`). See §7.1. |
 | **Look further ahead** | Config tab → change `LEAD_DAYS` (1 = tomorrow, 2 = two days out, …). |
 | **Change the send time** | Apps Script editor → **Triggers** (alarm-clock icon) → edit the `main` trigger's time. |
 | **⭐ Start a new season** | Config tab → update `SEASON_START_YEAR` (and `SEASON_START_MONTH` if the season starts a different month). **This is the one annual task — see §8.** |
@@ -128,6 +134,24 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 | `SHOW_UNASSIGNED_WARNING` | `TRUE` | `TRUE` = show a ⚠️ UNASSIGNED line when a Recap/Livetweet cell is blank. |
 
 Only these five keys are read. Values are validated with fallbacks, so a typo (e.g. `DRY_RUN = maybe`) silently reverts to the safe default rather than crashing.
+
+### 7.1 The `Groups` tab (per-sport routing)
+
+Each sport has its own Telegram group, and roll calls post into that group's **Roll Call** topic. The `Groups` tab tells the bot where each sport goes:
+
+| Sport keyword | Chat ID | Thread ID (Roll Call topic) | Notes |
+|---|---|---|---|
+| `Basketball` | `-100…` | `12` | covers Men's, Women's, and 3x3 |
+| `Football` | `-100…` | `7` | |
+| `Chess` | `-100…` | `4` | |
+
+How it works:
+- **Matching:** for each game, the bot finds the first row whose keyword appears in the game's sport name (case-insensitive). `Basketball` matches `R1 Men's Basketball`, `R1 Women's Basketball`, and `R1 Men's 3x3 Basketball` — all go to the same Roll Call topic.
+- **Row order = priority.** If you ever want a sub-variant in a *different* topic (say 3x3 in its own tab), add a `3x3` row **above** the `Basketball` row; the more specific row wins for matching games. Otherwise the general row covers everything.
+- **Chat ID vs Thread ID:** the Chat ID is the whole group; the Thread ID picks the topic (tab) within it. Every topic in the same group shares one Chat ID. Leave Thread ID blank only for a non-forum group.
+- **Unmapped sport:** if no row matches, the roll call goes to the admin chat (`TELEGRAM_CHAT_ID`) with a warning appended — so it's never lost. Add a row to fix routing.
+
+**Finding the IDs:** make the bot an **admin** of the group (or disable its privacy mode via BotFather → `/setprivacy`), post any message in each Roll Call topic, then run `harvestChatIds()`. The execution log prints each `chatId` + `threadId` + topic sample — paste those into the tab. Run `testRouting` afterward to confirm each game resolves to the right group/topic before sending.
 
 ---
 
@@ -159,7 +183,7 @@ clasp push            # local files → Apps Script (this is the deploy)
 git add -A && git commit -m "…" && git push
 ```
 
-**First-time setup of a fresh Apps Script project:** create a bound script on the tracker sheet, put its `scriptId` in `apps-script/.clasp.json`, `clasp push`, set the two Script Properties (§5), run `setupConfigTab()`, populate `Staffers`, then run `createDailyTrigger()`.
+**First-time setup of a fresh Apps Script project:** create a bound script on the tracker sheet, put its `scriptId` in `apps-script/.clasp.json`, `clasp push`, set the two Script Properties (§5), run `setupConfigTab()` and `setupGroupsTab()`, populate `Staffers` and `Groups` (use `harvestChatIds()` for the chat/topic IDs), then run `createDailyTrigger()`.
 
 ### Verification / test functions (run from the editor)
 
@@ -174,6 +198,9 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 | `testEventNameParser` | sport/opponent splitting |
 | `testFullEventBuild` | full event objects with resolved handles |
 | `testMessageRender` | the exact message text (no send) |
+| `testRouting` | which group + topic each game resolves to (no send) |
+| `harvestChatIds` | logs chat/topic IDs from the bot's recent updates (to fill the Groups tab) |
+| `setupConfigTab` / `setupGroupsTab` | create + seed the Config / Groups tabs |
 | `testSend` | the **real** send path for a date (honors `DRY_RUN`) |
 | `testErrorHandling` | forces an error → confirms the Telegram alert + `_log` entry |
 | `resetLog` | wipes the `_log` ledger so a date can be re-sent |
@@ -187,7 +214,9 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 | Symptom | Likely cause & fix |
 |---|---|
 | **No messages at all** | Is `DRY_RUN` `FALSE`? Is the trigger installed (`listTriggers`)? Do the live month tabs actually have games dated for tomorrow? |
-| **"Sent" in the log but nothing in the group** | Wrong `TELEGRAM_CHAT_ID`, **or the group was upgraded to a supergroup** — its ID changes (gains a `-100` prefix) and sends fail. Re-fetch the chat ID and update the Script Property. |
+| **"Sent" in the log but nothing in the group** | Wrong Chat/Thread ID in the Groups tab, **or the group's ID changed** (e.g. upgraded to a supergroup — gains a `-100` prefix). Re-run `harvestChatIds()` and update the Groups tab. The `_log` Detail column shows the `chatId/threadId` each message targeted. |
+| **Roll call landed in the admin chat with a ⚠️ warning** | That sport has no matching row in the Groups tab. Add one (see §7.1), then it routes correctly next time. |
+| **Wrong topic (tab) within the right group** | The `Thread ID` for that sport is wrong. Re-run `harvestChatIds()` (post in the correct Roll Call topic first) and fix the row. |
 | **A game is skipped unexpectedly** | Its event name has no `DLSU vs X` opponent, or it already shows `SENT` in `_log` (run `resetLog` to re-send). |
 | **Wrong time shown** | The time is formatted in the *spreadsheet's* timezone. If the spreadsheet's timezone setting is wrong, the displayed (and posted) time will be too. |
 | **A staffer shows "no handle on file"** | The name in the Recap/Livetweet cell doesn't match any `Name` in the Staffers tab, or that row's Handle is blank. |
