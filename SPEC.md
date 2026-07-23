@@ -1,6 +1,6 @@
 # TLS UAAP Roll Call Bot — Specification
 
-Automated Telegram roll call for The LaSallian's UAAP Season 88 coverage.
+Automated Telegram roll call for The LaSallian's UAAP Season 89 coverage.
 
 **Platform:** Google Apps Script (bound to the Coverage Tracker spreadsheet)
 **Language:** JavaScript (Apps Script runtime, V8)
@@ -106,7 +106,7 @@ Config values must be read with sensible fallback defaults so a missing row does
 ## 3. Parsing rules
 
 This is the hard part of the project. Everything else is plumbing.
-
+2
 ### 3.1 Date resolution — column B
 
 Column B is typed by hand and Google Sheets coerces inconsistently. Three cases:
