@@ -103,6 +103,15 @@ function createDailyTrigger() {
     .create();
 }
 
+/** Verification helper: log every installed project trigger. */
+function listTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  Logger.log(`${triggers.length} trigger(s) installed:`);
+  triggers.forEach((t) => {
+    Logger.log(`- handler=${t.getHandlerFunction()} eventType=${t.getEventType()} source=${t.getTriggerSource()}`);
+  });
+}
+
 // ---------------------------------------------------------------------
 // Build-order test helpers (SPEC.md §9)
 // ---------------------------------------------------------------------
