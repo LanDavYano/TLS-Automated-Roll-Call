@@ -1,0 +1,12 @@
+# clasp — links to the Apps Script project and holds local OAuth credentials.
+# Never commit these.
+.clasp.json
+.clasprc.json
+
+# Node tooling
+node_modules/
+
+# Internal / real data — keep coverage trackers and exports out of git.
+*.xlsx
+*.xlsm
+*.csv

@@ -17,7 +17,6 @@ Chosen over Python/Railway and GitHub Actions because it must run unattended for
 TLS-Automated-Roll-Call/
 ├── SPEC.md                  # this file
 ├── README.md                # handoff instructions for successors
-├── Copy_of_TLS_UAAP_88_Coverage_Tracker__1_.xlsx   # reference copy of real data
 └── apps-script/             # clasp-managed, pushed to Apps Script
     ├── .clasp.json
     ├── appsscript.json
@@ -80,7 +79,7 @@ Row 2 has group headers (`B2:D4` = Date block, `G2:O2` = Deliverables, `P2:V2` =
 | A | B |
 |---|---|
 | `Name` | `Handle` |
-| `Lance` | `@handle1` |
+| `Staffer 1` | `@handle1` |
 | `Staffer 2` | `@handle2` |
 
 Row 1 is a header. Names must match what is typed in columns Q and R. Matching is **case-insensitive and whitespace-trimmed**.
