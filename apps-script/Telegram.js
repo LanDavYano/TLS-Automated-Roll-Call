@@ -21,6 +21,24 @@ function getAdminChatId_() {
 }
 
 /**
+ * Low-level Bot API call. Returns the parsed response body and never throws on
+ * an HTTP error — callers that must react to failure check `body.ok`. Used by
+ * the command layer, where a failed reply should be logged, not fatal.
+ */
+function telegramApi_(method, payload) {
+  const url = `https://api.telegram.org/bot${getBotToken_()}/${method}`;
+  const options = { method: 'post', contentType: 'application/json', muteHttpExceptions: true };
+  if (payload) options.payload = JSON.stringify(payload);
+
+  const response = UrlFetchApp.fetch(url, options);
+  try {
+    return JSON.parse(response.getContentText());
+  } catch (err) {
+    return { ok: false, description: `Unparseable response (HTTP ${response.getResponseCode()})` };
+  }
+}
+
+/**
  * Send one message. options:
  *   chatId    — target chat (defaults to the admin chat)
  *   threadId  — forum topic (message_thread_id); omitted for non-topic chats
@@ -57,22 +75,62 @@ function sendTelegramMessage_(text, options) {
  * log them) so a broken Telegram connection never masks the original
  * exception that triggered the notification. Always goes to the admin chat.
  */
-function notifyError_(message) {
+function notifyAdmin_(message) {
   try {
     sendTelegramMessage_(message, { parseMode: undefined });
   } catch (err) {
-    Logger.log(`Failed to send error notification: ${err}`);
+    Logger.log(`Failed to send admin notification: ${err}`);
   }
 }
 
+/** §6 — error alerts. Same channel as notifyAdmin_; named for the caller's intent. */
+function notifyError_(message) {
+  notifyAdmin_(message);
+}
+
 /**
- * Setup helper: post a message in each Roll Call topic (and any group the bot
- * should send to), then run this to read the chat IDs and topic thread IDs out
- * of the bot's recent updates. Paste them into the Groups tab.
+ * Reply to a command, in the topic it was typed in.
  *
- * Gotchas: the bot only sees messages if it is a group admin OR privacy mode is
- * off (BotFather → /setprivacy → Disable). getUpdates only returns the last ~24h
- * and won't work if a webhook is set.
+ * Plain text on purpose: replies quote group titles, sheet values, and whatever
+ * the user typed, and a single stray "<" in HTML mode makes Telegram reject the
+ * whole message — turning a helpful error into silence.
+ */
+function sendReply_(chatId, threadId, text) {
+  const payload = { chat_id: chatId, text: text };
+  if (threadId !== null && threadId !== undefined && threadId !== '') {
+    payload.message_thread_id = Number(threadId);
+  }
+
+  const body = telegramApi_('sendMessage', payload);
+  if (!body.ok) console.error(`sendReply_ failed: ${JSON.stringify(body)}`);
+  return body;
+}
+
+/**
+ * True when the user can administer this chat. Gates the commands that write to
+ * the tracker or post to the whole GC. Fails closed: an API error or an
+ * unparseable response denies rather than allows.
+ *
+ * Anonymous admins post as the group itself, so they carry no user id and won't
+ * pass — post normally when running /setup.
+ */
+function isChatAdmin_(chatId, userId) {
+  if (!userId) return false;
+
+  const body = telegramApi_('getChatMember', { chat_id: chatId, user_id: userId });
+  if (!body.ok || !body.result) return false;
+  return body.result.status === 'creator' || body.result.status === 'administrator';
+}
+
+/**
+ * LEGACY setup helper, superseded by /setup and /whereami (Commands.js): post a
+ * message in each Roll Call topic, then run this to read the chat and topic IDs
+ * out of the bot's recent updates and paste them into the Groups tab by hand.
+ *
+ * Kept as a fallback for when the webhook is down. Note that getUpdates and a
+ * registered webhook are mutually exclusive — with the webhook live this
+ * returns a 409, and you'd have to removeWebhook() first (which stops every
+ * command working until setupWebhook() runs again). Use /whereami instead.
  */
 function harvestChatIds() {
   const token = getBotToken_();

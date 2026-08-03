@@ -5,8 +5,7 @@
  */
 
 function getStafferMap() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('Staffers');
+  const sheet = getSpreadsheet_().getSheetByName('Staffers');
   if (!sheet) return {};
 
   const map = {};

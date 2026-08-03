@@ -9,7 +9,11 @@ const CONFIG_DEFAULTS = {
   DRY_RUN: true,
   LEAD_DAYS: 1,
   SHOW_UNASSIGNED_WARNING: true,
+  SUMMARY_MODE: 'ATTENTION',
 };
+
+/** Recognised SUMMARY_MODE values (§6.1). Anything else falls back to ATTENTION. */
+const SUMMARY_MODES = ['ATTENTION', 'ALWAYS', 'NEVER'];
 
 /**
  * Seed values + human descriptions for the Config tab, used by
@@ -22,6 +26,7 @@ const CONFIG_KEY_META = [
   ['DRY_RUN', 'TRUE', 'TRUE = log only, never send to Telegram. Set FALSE to go live; set TRUE to pause the bot.'],
   ['LEAD_DAYS', 1, 'How many days ahead to look. 1 = announce tomorrow\'s games in tonight\'s run.'],
   ['SHOW_UNASSIGNED_WARNING', 'TRUE', 'TRUE = show a "UNASSIGNED" warning line when the Recap or Livetweet staffer cell is blank.'],
+  ['SUMMARY_MODE', 'ATTENTION', 'Nightly report to the admin chat. ATTENTION = only when something needs a human (unmapped sport, unassigned staffer, error). ALWAYS = every night. NEVER = errors only.'],
 ];
 
 /**
@@ -65,8 +70,7 @@ function setupConfigTab() {
 }
 
 function getConfig() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName('Config');
+  const sheet = getSpreadsheet_().getSheetByName('Config');
   if (!sheet) return Object.assign({}, CONFIG_DEFAULTS);
 
   const raw = {};
@@ -83,7 +87,14 @@ function getConfig() {
     DRY_RUN: toBool_(raw.DRY_RUN, CONFIG_DEFAULTS.DRY_RUN),
     LEAD_DAYS: toInt_(raw.LEAD_DAYS, CONFIG_DEFAULTS.LEAD_DAYS),
     SHOW_UNASSIGNED_WARNING: toBool_(raw.SHOW_UNASSIGNED_WARNING, CONFIG_DEFAULTS.SHOW_UNASSIGNED_WARNING),
+    SUMMARY_MODE: toEnum_(raw.SUMMARY_MODE, SUMMARY_MODES, CONFIG_DEFAULTS.SUMMARY_MODE),
   };
+}
+
+/** Uppercased match against an allowed list; a typo falls back rather than crashing. */
+function toEnum_(value, allowed, fallback) {
+  const s = String(value == null ? '' : value).trim().toUpperCase();
+  return allowed.indexOf(s) === -1 ? fallback : s;
 }
 
 function toInt_(value, fallback) {

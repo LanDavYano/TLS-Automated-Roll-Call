@@ -24,6 +24,8 @@ function runRollCall_() {
  * filter to that date, and run each matching event through the real send
  * path (idempotency + Telegram + _log). Used by both the nightly run and
  * the testSend() helper so they behave identically.
+ *
+ * Returns one outcome per event, which reportRun_ turns into the admin summary.
  */
 function sendMatchingEvents_(targetDate, config) {
   const stafferMap = getStafferMap();
@@ -37,23 +39,32 @@ function sendMatchingEvents_(targetDate, config) {
     `${matching.length} event(s) matched for ${targetDate.year}-${targetDate.month}-${targetDate.day} (DRY_RUN=${config.DRY_RUN})`
   );
 
+  const outcomes = [];
   matching.forEach((event) => {
     try {
-      sendEventRollCall_(event, stafferMap, config, routing);
+      outcomes.push(sendEventRollCall_(event, stafferMap, config, routing));
     } catch (err) {
       // §6 — guard individually so one bad event doesn't kill the whole run.
       logStatus_(buildEventKey_(event), 'ERROR', String(err));
       notifyError_(`⚠️ Roll call bot error (${event.sport || 'event'}, ${event.opponent} vs DLSU): ${err}`);
+      outcomes.push({ event, status: 'ERROR', matched: false, detail: String(err), unassigned: [] });
     }
   });
+
+  reportRun_(targetDate, outcomes, config);
+  return outcomes;
 }
 
 function sendEventRollCall_(event, stafferMap, config, routing) {
+  const unassigned = [];
+  if (!event.recapNames.length) unassigned.push('Recap');
+  if (!event.livetweetNames.length) unassigned.push('Livetweet');
+
   const eventKey = buildEventKey_(event);
   if (hasBeenSent_(eventKey)) {
     logStatus_(eventKey, 'SKIPPED_DUPLICATE');
     Logger.log(`SKIPPED_DUPLICATE: ${eventKey}`);
-    return;
+    return { event, status: 'SKIPPED_DUPLICATE', matched: true, dest: '', unassigned: [] };
   }
 
   // Route to the sport's group + Roll Call topic (Groups tab). An unmapped
@@ -71,29 +82,68 @@ function sendEventRollCall_(event, stafferMap, config, routing) {
   if (config.DRY_RUN) {
     Logger.log(`[DRY RUN] → ${dest} (matched=${target.matched})\n${message}`);
     logStatus_(eventKey, 'DRY_RUN', dest);
-    return;
+    return { event, status: 'DRY_RUN', matched: target.matched, dest, unassigned };
   }
 
   sendTelegramMessage_(message, { parseMode: 'HTML', chatId: target.chatId, threadId: target.threadId });
   logStatus_(eventKey, 'SENT', dest);
   Logger.log(`SENT: ${eventKey} → ${dest}`);
+  return { event, status: 'SENT', matched: target.matched, dest, unassigned };
+}
+
+/**
+ * §6.1 — post-run report to the admin chat.
+ *
+ * Defaults to ATTENTION: silent on a clean night, so a message arriving means
+ * something rather than becoming one more notification to swipe away. The
+ * things worth waking someone for are a sport with no GC (its roll call went to
+ * the admin chat instead of the staffers), a blank staffer cell (nobody is
+ * assigned to a game tomorrow), and an event that failed outright.
+ */
+function reportRun_(targetDate, outcomes, config) {
+  const mode = config.SUMMARY_MODE || 'ATTENTION';
+  if (mode === 'NEVER') return;
+
+  const problems = [];
+  outcomes.forEach((o) => {
+    const who = `${o.event.sport || 'event'} — ${o.event.opponent} vs DLSU`;
+    if (o.status === 'ERROR') problems.push(`• ${who}: FAILED — ${o.detail}`);
+    else if (!o.matched) problems.push(`• ${who}: no GC mapped — went to this chat instead. Run /setup in its GC.`);
+    if (o.unassigned.length) problems.push(`• ${who}: ${o.unassigned.join(' and ')} unassigned in the tracker`);
+  });
+
+  if (mode === 'ATTENTION' && !problems.length) return;
+
+  const dateLabel = `${MONTH_NAMES[targetDate.month - 1]} ${targetDate.day}`;
+  const lines = [`Roll call run for ${dateLabel}: ${outcomes.length} event(s).`];
+
+  if (config.DRY_RUN) lines.push('DRY_RUN is TRUE — nothing was actually sent.');
+
+  outcomes.forEach((o) => {
+    lines.push(`${statusIcon_(o.status)} ${o.event.sport || 'event'} — ${o.event.opponent} vs DLSU → ${o.dest || 'n/a'}`);
+  });
+
+  if (problems.length) lines.push('', 'Needs a human:', ...problems);
+
+  notifyAdmin_(lines.join('\n'));
+}
+
+function statusIcon_(status) {
+  if (status === 'SENT') return '✅';
+  if (status === 'SKIPPED_DUPLICATE') return '⏭️';
+  if (status === 'DRY_RUN') return '🌵';
+  return '❌';
 }
 
 /** §7 — "tomorrow" (or LEAD_DAYS ahead) computed in Asia/Manila, never the runtime default. */
 function computeTargetDate_(config) {
-  const todayStr = Utilities.formatDate(new Date(), 'Asia/Manila', 'yyyy-MM-dd');
-  const [y, m, d] = todayStr.split('-').map((n) => parseInt(n, 10));
-  const target = new Date(y, m - 1, d + config.LEAD_DAYS);
+  const today = todayInManila_();
+  const target = new Date(today.year, today.month - 1, today.day + config.LEAD_DAYS);
   return { year: target.getFullYear(), month: target.getMonth() + 1, day: target.getDate() };
 }
 
 function readMonthRows_(monthName) {
-  const sheet = getMonthSheet(monthName);
-  const lastRow = sheet.getLastRow();
-  if (lastRow < FIRST_DATA_ROW) return [];
-  return sheet
-    .getRange(FIRST_DATA_ROW, 1, lastRow - FIRST_DATA_ROW + 1, sheet.getLastColumn())
-    .getValues();
+  return readSheetRows_(getMonthSheet(monthName));
 }
 
 /** §11 — daily 7-8 PM Asia/Manila trigger. Run this once by hand to install it. */
@@ -239,6 +289,64 @@ function testRouting(dateString) {
     Logger.log(
       `${e.sport} (${e.opponent}) → chatId=${t.chatId} threadId=${t.threadId || '(none)'} matched=${t.matched} keyword=${t.keyword || '-'}`
     );
+  });
+}
+
+// ---------------------------------------------------------------------
+// Command-layer helpers (SPEC.md §12) — verify without Telegram
+// ---------------------------------------------------------------------
+
+/** A group title to exercise the /setup guesser with from the editor. */
+const TEST_GROUP_TITLE = 'UAAP 88 Football GC';
+
+/**
+ * What /setup would infer for a group title, and why. Run this before adding
+ * the bot to a new GC if you want to know in advance whether the name is
+ * guessable — a title it can't read is the one case /setup needs an argument.
+ */
+function testSetupGuess(title) {
+  title = title || TEST_GROUP_TITLE;
+  const sports = collectSeasonSports_(getConfig());
+
+  Logger.log(`Title: "${title}"`);
+  Logger.log(`Candidates (longest first): ${sportCandidatesFromTitle_(title).join(' | ') || '(none)'}`);
+
+  const guess = guessSportKeyword_(title, sports);
+  if (!guess) {
+    Logger.log('No match — /setup would ask for an explicit keyword. Sports in the tracker:');
+    sports.forEach((s) => Logger.log(`  ${s.sport} (${s.upcoming} upcoming)`));
+    return;
+  }
+
+  Logger.log(`Keyword: "${guess.keyword}" → matches ${guess.matchedSports.length} sport(s): ${guess.matchedSports.join(', ')}`);
+}
+
+/** What /next would find for a keyword, across every month tab. */
+function testUpcoming(keyword) {
+  keyword = keyword || 'basketball';
+  const config = getConfig();
+
+  Logger.log(`Month tabs in season order: ${listSeasonMonths_(config).map((m) => `${m.name} ${m.year}`).join(', ')}`);
+
+  const events = findUpcomingEvents_(config, todayInManila_(), (e) => sportMatchesKeyword_(e.sport, keyword), 5);
+  if (!events.length) {
+    Logger.log(`No upcoming events matching "${keyword}".`);
+    return;
+  }
+  events.forEach((e) => Logger.log(`${formatEventDate_(e)} — ${e.sport}: ${e.opponent} vs DLSU, ${e.time}`));
+}
+
+/** Season coverage: which sports exist in the tracker, and which have no GC. */
+function testCoverage() {
+  const config = getConfig();
+  const map = getGroupMap();
+
+  Logger.log(`${map.length} active mapping(s):`);
+  map.forEach((g) => Logger.log(`  ${g.label} → ${g.chatId}${g.threadId ? '/' + g.threadId : ''} (${g.title || 'no title recorded'})`));
+
+  collectSeasonSports_(config).forEach((s) => {
+    const hit = map.find((g) => sportMatchesKeyword_(s.sport, g.keyword));
+    Logger.log(`  ${hit ? '✅' : '❌'} ${s.sport} — ${s.upcoming} upcoming${hit ? ` → ${hit.label}` : ' (NO GC)'}`);
   });
 }
 

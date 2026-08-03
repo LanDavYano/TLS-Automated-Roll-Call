@@ -4,8 +4,8 @@ Automated Telegram roll call for The LaSallian's UAAP Season 89 coverage.
 
 **Platform:** Google Apps Script (bound to the Coverage Tracker spreadsheet)
 **Language:** JavaScript (Apps Script runtime, V8)
-**Trigger:** Time-driven, daily, 7:00–8:00 PM Asia/Manila
-**Behaviour:** Reads the tracker, finds tomorrow's game events, posts one roll call message per event to a Telegram group.
+**Triggers:** Time-driven, daily, 7:00–8:00 PM Asia/Manila — plus a Telegram webhook (Web App) for chat commands (§12)
+**Behaviour:** Reads the tracker, finds tomorrow's game events, posts one roll call message per event into each sport's own Telegram group. Onboarding a new group is done from inside Telegram with `/setup`.
 
 Chosen over Python/Railway and GitHub Actions because it must run unattended for years after the original author leaves. No hosting account, no credentials file, no credit balance, no workflow-disable rule. Handoff is transferring ownership of the spreadsheet.
 
@@ -23,9 +23,13 @@ TLS-Automated-Roll-Call/
     ├── Config.js
     ├── Sheets.js
     ├── Parser.js
+    ├── Season.js       # cross-month reads for the commands (§12.4)
+    ├── Groups.js       # per-sport routing + Groups tab writes (§4.4)
     ├── Staffers.js
     ├── Template.js
     ├── Telegram.js
+    ├── Webhook.js      # doPost + command routing (§12.1)
+    ├── Commands.js     # command handlers (§12.2)
     ├── Log.js
     └── Main.js
 ```
@@ -95,8 +99,9 @@ Key–value pairs, header in row 1.
 | `DRY_RUN` | `TRUE` | `TRUE` = log only, never send |
 | `LEAD_DAYS` | `1` | Days ahead to look (1 = tomorrow) |
 | `SHOW_UNASSIGNED_WARNING` | `TRUE` | Emit ⚠️ line for empty Q or R |
+| `SUMMARY_MODE` | `ATTENTION` | Post-run report to the admin chat — see §6.1 |
 
-Telegram credentials live in **Script Properties**, not here — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+Telegram credentials live in **Script Properties**, not here — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, plus `WEB_APP_URL` and `WEBHOOK_SECRET` for the command layer (§12.5).
 
 Config values must be read with sensible fallback defaults so a missing row does not crash the script.
 
@@ -277,17 +282,21 @@ Roll calls are **not** all sent to one chat. Each sport has its own Telegram gro
 
 A `Groups` tab maps sport → destination:
 
-| A (`Sport keyword`) | B (`Chat ID`) | C (`Thread ID`) | D (`Notes`) |
-|---|---|---|---|
-| `Basketball` | `-100…` | `<Roll Call topic id>` | covers Men's, Women's, 3x3 |
-| `Football` | `-100…` | `<Roll Call topic id>` | |
+| A (`Sport keyword`) | B (`Chat ID`) | C (`Thread ID`) | D (`Notes`) | E (`Group title`) | F (`Last updated`) | G (`Active`) |
+|---|---|---|---|---|---|---|
+| `Basketball` | `-100…` | `<Roll Call topic id>` | covers Men's, Women's, 3x3 | `UAAP 88 Basketball GC` | `2025-09-01 19:04` | `TRUE` |
+| `Football` | `-100…` | `<Roll Call topic id>` | | `UAAP 88 Football GC` | | `TRUE` |
 
-- **Row order is priority.** For each event, the first row whose keyword (case-insensitive) is a substring of the event's `sport` wins. Put specific keywords (e.g. `3x3`) above general ones (e.g. `Basketball`) if a sub-variant ever needs a different topic; otherwise the general row covers all its variants.
+- **Row order is priority.** For each event, the first row whose keyword (case-insensitive, apostrophe-normalised) is a substring of the event's `sport` wins. Specific keywords (e.g. `3x3`) go above general ones (e.g. `Basketball`) when a sub-variant needs its own topic; otherwise the general row covers all its variants.
 - Rows missing a keyword or Chat ID are skipped (safe as templates).
+- **Column G `Active`:** `FALSE` retires a row without deleting it (`/unmap` writes this). **Blank counts as active** — the column was added after rows existed by hand, and an empty cell must never silently disable a working mapping.
+- Columns E and F are written by `/setup` for humans; the script never reads them.
 - **Unmapped sport → admin/fallback chat.** `TELEGRAM_CHAT_ID` (Script Properties) is the admin chat: error alerts (§6) and any roll call with no matching Groups row go here, the latter with an appended warning so it's never silently lost.
 - `Thread ID` blank ⇒ send with no `message_thread_id` (posts to a non-forum group's main view).
 
-`setupGroupsTab()` creates and seeds the tab; `harvestChatIds()` reads chat and topic IDs from the bot's `getUpdates` for pasting into it (bot must be a group admin or have privacy mode off to see the messages).
+Rows are normally written by `/setup` from inside the GC (§12.2). `setupGroupsTab()` still creates and seeds the tab for a manual start; `harvestChatIds()` remains as a webhook-down fallback but is superseded by `/whereami`.
+
+**Insertion order is derived from the data, not guessed.** Appending a new keyword is wrong whenever an existing broader rule already matches the same games — a `3x3` row below `Basketball` never wins, because a 3x3 game's sport contains both words. Keyword *length* is not a usable proxy for specificity either (`basketball` is longer than `3x3`). So `upsertGroupMapping_` collects the sport strings the new keyword matches, finds the first existing rule that also matches any of them, and inserts directly above it. Nothing conflicting ⇒ append.
 
 ---
 
@@ -321,6 +330,20 @@ Wrap the entire `main()` in `try/catch`. On exception:
 A silent failure is the worst outcome — the newsroom would assume no events rather than a broken bot. Loud failure is correct here.
 
 Guard individually so one bad row does not kill the whole run: if a single event fails to parse, log it, notify, and continue to the next event.
+
+### 6.1 Post-run report
+
+`sendMatchingEvents_` returns one outcome per event (`{event, status, matched, dest, unassigned}`) and `reportRun_` turns them into a message to the admin chat. `SUMMARY_MODE` (Config tab) selects the policy:
+
+| Value | Behaviour |
+|---|---|
+| `ATTENTION` (default) | Report only when something needs a human |
+| `ALWAYS` | Report every night, clean or not |
+| `NEVER` | No report; error alerts (§6) still send |
+
+Three things count as needing a human: an event whose sport has **no Groups mapping** (its roll call went to the admin chat instead of the staffers), a **blank Recap or Livetweet cell** for a game happening tomorrow, and an event that **failed outright**.
+
+The default is silence-on-success by design. A nightly "all good" message is read for a week and ignored forever after, which is worse than no message at all — the signal has to stay rare to stay meaningful. A duplicate skip is not reported as a problem: it is the idempotency ledger working, and it is the *expected* state for any game already pushed manually with `/rollcall`.
 
 ---
 
@@ -387,5 +410,94 @@ Write a README covering:
 - Photo, Web, Layout, Execs columns (P, S–V) — not read
 - Non-game events — skipped, never announced
 - Per-event reminders at N hours before start — v2 at the earliest; current scope is one 7 PM run the day before
-- Reading replies or confirmations from staffers — the bot only posts
-- Editing the spreadsheet — read-only except for the `_log` tab
+- Reading replies or confirmations from staffers — the bot reads **commands** (§12) but never tracks who acknowledged a roll call
+- Editing the spreadsheet — read-only except the `_log` tab and, since §12, the `Groups` tab (written only by `/setup` and `/unmap`)
+
+---
+
+## 12. Command layer
+
+Roll calls are one message per game across a dozen sport GCs, and each GC has to be wired to the tracker before its first game. Doing that by hand — post a message, run `harvestChatIds()`, read the log, paste two IDs into a row, get the row order right — is a dozen chances to typo an ID into a mapping that fails silently in three weeks. The commands move onboarding into the place where the person doing it already is: the Telegram group itself.
+
+### 12.1 Transport
+
+Telegram delivers updates to the Web App's `/exec` URL. `doPost` (Webhook.js) parses the update and routes to a handler in Commands.js.
+
+```
+Telegram group                     Apps Script                     Coverage Tracker
+──────────────                     ───────────                     ────────────────
+ admin types            webhook POST
+ /setup          ──────────────────► doPost(e)
+                                        │  secret check
+                                        ▼
+                                    handleUpdate_()
+                                        │  parseCommand_ → {command, args}
+                                        ▼
+                                    handleSetup_()  ──── read ────► month tabs
+                                        │                           (sports list)
+                                        │  ◄─── write ────────────► Groups tab
+                                        ▼
+ reply in-thread ◄──── sendReply_ ──────┘
+```
+
+Rules that are not optional:
+
+- **`doPost` must always return 200.** Telegram retries any non-200, and a retried `/rollcall` is a double post in the GC. Every path returns `ContentService.createTextOutput('ok')`; handler exceptions are caught by `runCommand_`, which replies with the error rather than letting it escape.
+- **Edited messages are ignored.** Editing `/next` into `/rollcall` must not fire a post.
+- **Unknown commands exit silently.** Other bots share these groups; answering `/recap` with "unknown command" would be noise.
+- **Replies are plain text, never HTML.** They quote group titles, sheet values, and user input; one stray `<` in HTML mode makes Telegram reject the whole message, turning a helpful error into silence. Only the roll call itself uses `parse_mode: HTML` (§4.1).
+
+### 12.2 Commands
+
+| Command | Who | Effect |
+|---|---|---|
+| `/setup [sport]` | admins | Map this topic as the sport's Roll Call destination. Writes the `Groups` row. |
+| `/rollcall [sport] [force]` | admins | Post the next upcoming roll call for this GC now; logs `SENT`. |
+| `/next [sport]` | anyone | Preview the next game and its exact message. Sends nothing, logs nothing. |
+| `/whereami` | anyone | Chat/thread IDs, mapping, `DRY_RUN`, season, trigger status. |
+| `/groups` | anyone | Every mapping in priority order, plus sports with upcoming games and no GC. |
+| `/unmap` | admins | Sets `Active = FALSE` on this topic's rows. |
+| `/help`, `/start` | anyone | Command list + whether this GC is mapped. |
+
+Admin gating uses `getChatMember` and **fails closed** — an API error denies. Anonymous admin posts carry no user id and will not pass; post normally.
+
+`/setup` and `/unmap` take `LockService.getScriptLock()`: the `Groups` write is read-modify-write and may insert a row, so two GCs being set up at once must serialise.
+
+### 12.3 `/setup` — deriving the sport
+
+With no argument, the sport is inferred from the group's title; `/setup <keyword>` overrides it. The derivation:
+
+1. Strip punctuation, lowercase, drop bare numbers and noise words (`gc`, `uaap`, `season`, …) — `TITLE_NOISE_WORDS` in Groups.js.
+2. Generate every contiguous n-gram of what's left, **longest first**, so `Beach Volleyball GC` prefers `beach volleyball` over the bare `volleyball` that would also swallow every indoor game.
+3. Take the first candidate that appears in a sport name **actually present in the tracker**.
+
+Step 3 is the important one. A keyword is only accepted if the tracker really has that sport, because the failure mode of a wrong mapping is invisible: no error, no alert, just a roll call that never arrives, discovered weeks later by the staffer who wasn't told about their game. Nothing matches ⇒ `/setup` refuses, lists the sports it does know, and asks for an explicit keyword.
+
+The reply reports what it matched, how many upcoming games that covers, the next fixture, the exact destination, and — when it applies — that `DRY_RUN` is still `TRUE`.
+
+Re-running `/setup` for the same keyword **updates the row in place** rather than appending. That is what makes a season rollover cheap: same sports, new GCs, one `/setup` per group.
+
+### 12.4 Finding "the next game"
+
+The nightly run knows its target date, so it knows which month tab to open. The commands don't: the next Football game may be in this tab, the next one, or the one after. `Season.js` resolves every month tab to its season year (§3.2), sorts chronologically, and walks forward, returning as soon as it has enough matches — normally one tab read. Tabs that aren't English month names are skipped by name, so `Config`, `Staffers`, `Groups`, and `_log` need no exclusion list and a new month tab needs no code change.
+
+### 12.5 Guards on the manual push
+
+`/rollcall` shares the idempotency ledger with the nightly run (§5) — same `EventKey`, same `SENT` status — which is the entire point: a game pushed by hand at noon is skipped by the 7 PM run automatically.
+
+- **Already sent** ⇒ refuse and say when. `force` overrides (for a post someone deleted).
+- **More than 14 days out** ⇒ refuse and show the date. A push that far ahead is almost always the wrong GC or a sport whose season hasn't started. `force` overrides.
+- **`DRY_RUN` is deliberately ignored.** It pauses the *unattended* run; someone typing a command is not unattended. The reply says so when `DRY_RUN` is `TRUE`, so the operator knows the nightly run is still paused.
+- The `_log` Detail column records the pusher (`manual: @handle`), so the ledger stays auditable.
+
+### 12.6 Onboarding a new GC
+
+Adding the bot to a group fires a `my_chat_member` update; the bot replies with the sport it inferred from the title and the one command to run. Setup starts before anyone has to remember a command exists — which is why `setupWebhook()` subscribes to `my_chat_member` and not just `message`.
+
+### 12.7 Deployment constraints
+
+- **One webhook per bot token.** Registering here silently steals updates from any other script sharing the token. `setupWebhook()` refuses when a webhook already points elsewhere; `replaceExistingWebhook()` is the deliberate override. `checkWebhook()` prints the bot username and current URL.
+- **Always edit the existing deployment.** A new deployment mints a new `/exec` URL, and Telegram keeps POSTing to the dead one. Deploy → Manage deployments → ✏️ → New version.
+- **`getUpdates` and a webhook are mutually exclusive** — with the webhook live, `harvestChatIds()` returns 409.
+- **The `/exec` URL is public.** Apps Script cannot read request headers, so Telegram's `secret_token` header is unusable; the secret rides in the query string instead (`WEBHOOK_SECRET`, checked by `webhookSecretOk_`). Unset, the endpoint accepts anything that finds it.
+- **`SPREADSHEET_ID`** is an optional Script Property. A webhook request is a different execution context than an editor run or a trigger, and `getActiveSpreadsheet()` is only guaranteed for the bound ones; `getSpreadsheet_()` falls back to `openById` when it's set.

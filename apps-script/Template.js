@@ -71,3 +71,18 @@ function renderMessage_(event, stafferMap, config) {
 
   return lines.join('\n');
 }
+
+/**
+ * The roll call as it will *appear* in Telegram, for the plain-text previews
+ * the chat commands reply with. Command replies are sent without parse_mode
+ * (see sendReply_), so the HTML entities renderMessage_ escapes would show up
+ * literally as "&amp;" in a preview — unescaping is what makes the preview an
+ * honest picture of the real message. Order matters: & last, or "&amp;lt;"
+ * would collapse into "<".
+ */
+function renderPreview_(event, stafferMap, config) {
+  return renderMessage_(event, stafferMap, config)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}

@@ -6,7 +6,7 @@
 const LOG_SHEET_NAME = '_log';
 
 function getLogSheet_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   let sheet = ss.getSheetByName(LOG_SHEET_NAME);
   if (!sheet) {
     sheet = ss.insertSheet(LOG_SHEET_NAME);
