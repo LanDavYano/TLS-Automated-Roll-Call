@@ -112,7 +112,7 @@ function sendReply_(chatId, threadId, text) {
  * unparseable response denies rather than allows.
  *
  * Anonymous admins post as the group itself, so they carry no user id and won't
- * pass — post normally when running /setup.
+ * pass — post normally when running /rollsetup.
  */
 function isChatAdmin_(chatId, userId) {
   if (!userId) return false;
@@ -123,14 +123,14 @@ function isChatAdmin_(chatId, userId) {
 }
 
 /**
- * LEGACY setup helper, superseded by /setup and /whereami (Commands.js): post a
+ * LEGACY setup helper, superseded by /rollsetup and /rollwhere (Commands.js): post a
  * message in each Roll Call topic, then run this to read the chat and topic IDs
  * out of the bot's recent updates and paste them into the Groups tab by hand.
  *
  * Kept as a fallback for when the webhook is down. Note that getUpdates and a
  * registered webhook are mutually exclusive — with the webhook live this
  * returns a 409, and you'd have to removeWebhook() first (which stops every
- * command working until setupWebhook() runs again). Use /whereami instead.
+ * command working until setupWebhook() runs again). Use /rollwhere instead.
  */
 function harvestChatIds() {
   const token = getBotToken_();

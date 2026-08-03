@@ -103,7 +103,7 @@ function findNextEventForKeywords_(config, keywords) {
 
 /**
  * Every distinct sport string in the season, with its game counts and next
- * fixture. /setup validates a keyword against this list rather than trusting a
+ * fixture. /rollsetup validates a keyword against this list rather than trusting a
  * group title blindly, and /groups uses it to name the sports that still have
  * no GC mapped.
  */

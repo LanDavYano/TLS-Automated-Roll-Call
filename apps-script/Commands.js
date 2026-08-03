@@ -15,7 +15,7 @@
 const MANUAL_PUSH_WARN_DAYS = 14;
 
 // ---------------------------------------------------------------------
-// /setup — map this GC to a sport, from inside Telegram
+// /rollsetup — map this GC to a sport, from inside Telegram
 // ---------------------------------------------------------------------
 
 /**
@@ -23,13 +23,13 @@ const MANUAL_PUSH_WARN_DAYS = 14;
  * GC covers, checks that sport actually exists in the tracker, and writes the
  * Groups row. Nothing to copy, paste, or look up.
  *
- * With no argument the sport is inferred from the group's title; `/setup <word>`
+ * With no argument the sport is inferred from the group's title; `/rollsetup <word>`
  * overrides that. Either way the keyword is only accepted if it matches a sport
  * the tracker really has — a mapping to a sport nobody plays is a roll call
  * that never fires, and it would fail silently months later.
  */
 function handleSetup_(ctx) {
-  if (!requireAdmin_(ctx, '/setup')) return;
+  if (!requireAdmin_(ctx, '/rollsetup')) return;
 
   const config = getConfig();
   const sports = collectSeasonSports_(config);
@@ -58,7 +58,7 @@ function handleSetup_(ctx) {
         'Sports in the tracker right now:',
         formatSportList_(sports, 15),
         '',
-        'Run /setup <keyword> with a word from one of those — e.g. /setup Football',
+        'Run /rollsetup <keyword> with a word from one of those — e.g. /rollsetup Football',
       ].join('\n'));
       return;
     }
@@ -74,7 +74,7 @@ function handleSetup_(ctx) {
       'Sports in the tracker right now:',
       formatSportList_(sports, 15),
       '',
-      'Run /setup <keyword> with a word from one of those.',
+      'Run /rollsetup <keyword> with a word from one of those.',
     ].join('\n'));
     return;
   }
@@ -85,7 +85,7 @@ function handleSetup_(ctx) {
   );
 
   // The Groups write is read-modify-write (it may insert a row), so serialise
-  // concurrent /setup calls from different GCs.
+  // concurrent /rollsetup calls from different GCs.
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
@@ -122,7 +122,7 @@ function handleSetup_(ctx) {
   lines.push('');
   lines.push(ctx.threadId
     ? `Roll calls will post in this topic (thread ${ctx.threadId}).`
-    : 'Roll calls will post in this group’s main view — you ran /setup outside a topic. If this GC has a Roll Call topic, run /setup there and the mapping moves.');
+    : 'Roll calls will post in this group’s main view — you ran /rollsetup outside a topic. If this GC has a Roll Call topic, run /rollsetup there and the mapping moves.');
   lines.push(`Chat ${ctx.chatId} · Groups tab row ${result.rowNumber}`);
 
   if (result.above) {
@@ -217,7 +217,7 @@ function handleRollcall_(ctx) {
     lines.push('', 'Note: DRY_RUN is TRUE, so the nightly run is still paused. This manual post went out anyway.');
   }
   if (!target.matched) {
-    lines.push('', `⚠️ "${event.sport}" has no Groups rule, so it went to the admin chat. Run /setup in the right GC.`);
+    lines.push('', `⚠️ "${event.sport}" has no Groups rule, so it went to the admin chat. Run /rollsetup in the right GC.`);
   }
 
   sendReply_(ctx.chatId, ctx.threadId, lines.join('\n'));
@@ -262,7 +262,7 @@ function handleNext_(ctx) {
 }
 
 // ---------------------------------------------------------------------
-// /whereami — IDs and status for this topic
+// /rollwhere — IDs and status for this topic
 // ---------------------------------------------------------------------
 
 /**
@@ -281,7 +281,7 @@ function handleWhereami_(ctx) {
   ];
 
   if (!rows.length) {
-    lines.push('Mapped: no — run /setup here (in the Roll Call topic).');
+    lines.push('Mapped: no — run /rollsetup here (in the Roll Call topic).');
   } else {
     lines.push(`Mapped: ${rows.map((r) => r.label).join(', ')}`);
     rows.forEach((r) => {
@@ -332,7 +332,7 @@ function handleGroups_(ctx) {
   const lines = [];
 
   if (!map.length) {
-    lines.push('No sports are mapped yet.', 'Open a GC’s Roll Call topic and run /setup there.');
+    lines.push('No sports are mapped yet.', 'Open a GC’s Roll Call topic and run /rollsetup there.');
   } else {
     lines.push(`Mapped sports (${map.length}), in priority order:`);
     map.forEach((g) => {
@@ -396,7 +396,7 @@ function handleUnmap_(ctx) {
   sendReply_(ctx.chatId, ctx.threadId, [
     `Stopped routing to ${ctx.threadId ? 'this topic' : 'this GC'}: ${retired.join(', ')}`,
     '',
-    'The rows are marked Active = FALSE in the Groups tab, not deleted — set them back to TRUE to undo, or just run /setup here again.',
+    'The rows are marked Active = FALSE in the Groups tab, not deleted — set them back to TRUE to undo, or just run /rollsetup here again.',
     'Until then those roll calls go to the admin chat with a warning, so nothing is lost.',
   ].join('\n'));
 }
@@ -411,16 +411,16 @@ function handleHelp_(ctx) {
   sendReply_(ctx.chatId, ctx.threadId, [
     'TLS Roll Call bot — posts each game’s roll call the night before, from the coverage tracker.',
     '',
-    '/setup [sport] — map this topic as the sport’s Roll Call thread (admins)',
+    '/rollsetup [sport] — map this topic as the sport’s Roll Call thread (admins)',
     '/rollcall [sport] [force] — post the next roll call for this GC now (admins)',
     '/next — preview the next game and its roll call; posts nothing',
-    '/whereami — IDs, mapping, and bot status for this topic',
+    '/rollwhere — IDs, mapping, and bot status for this topic',
     '/groups — every mapping, plus sports with no GC yet',
     '/unmap — stop routing roll calls to this topic (admins)',
     '',
     rows.length
       ? `This GC is mapped to: ${rows.map((r) => r.label).join(', ')}`
-      : 'This GC is not mapped yet — run /setup in its Roll Call topic.',
+      : 'This GC is not mapped yet — run /rollsetup in its Roll Call topic.',
   ].join('\n'));
 }
 
@@ -468,7 +468,7 @@ function resolveCommandScope_(ctx, keywordArg) {
     sendReply_(ctx.chatId, ctx.threadId, [
       'This GC isn’t mapped to a sport yet.',
       '',
-      'Open its Roll Call topic and run /setup — or name the sport directly, e.g. /next Football',
+      'Open its Roll Call topic and run /rollsetup — or name the sport directly, e.g. /next Football',
     ].join('\n'));
     return null;
   }

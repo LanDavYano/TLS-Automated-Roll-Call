@@ -5,8 +5,8 @@
  *   B  Chat ID         the group's chat id (same for every topic in a group)
  *   C  Thread ID       the Roll Call topic's message_thread_id (blank = no topic)
  *   D  Notes           free text for humans; ignored by the script
- *   E  Group title     the GC's name as Telegram reported it at /setup time
- *   F  Last updated    when /setup last wrote this row
+ *   E  Group title     the GC's name as Telegram reported it at /rollsetup time
+ *   F  Last updated    when /rollsetup last wrote this row
  *   G  Active          FALSE retires a row without deleting it; blank = active
  *
  * ROW ORDER IS PRIORITY. The first rule whose keyword appears in the event's
@@ -14,7 +14,7 @@
  * all go to the Basketball group's Roll Call topic. A sub-variant that needs a
  * different destination gets its own row ABOVE the general one.
  *
- * Rows are normally written by /setup from inside Telegram (Commands.js), which
+ * Rows are normally written by /rollsetup from inside Telegram (Commands.js), which
  * places new rows correctly on its own — see upsertGroupMapping_. Hand-editing
  * still works: this tab remains the source of truth, read live on every run.
  */
@@ -51,7 +51,7 @@ function normalizeForMatch_(value) {
     .trim();
 }
 
-/** The single match test used by routing, /setup validation, and the commands. */
+/** The single match test used by routing, /rollsetup validation, and the commands. */
 function sportMatchesKeyword_(sport, keyword) {
   const k = normalizeForMatch_(keyword);
   if (!k) return false;
@@ -152,7 +152,7 @@ function findGroupByKeyword_(keyword) {
 }
 
 // ---------------------------------------------------------------------
-// Writing (/setup, /unmap)
+// Writing (/rollsetup, /unmap)
 // ---------------------------------------------------------------------
 
 /**
@@ -176,7 +176,7 @@ function upsertGroupMapping_(entry, matchedSports) {
 
   const existing = rows.filter((r) => r.keyword === keyword);
   if (existing.length) {
-    // Re-running /setup in a topic updates its row in place — that's what makes
+    // Re-running /rollsetup in a topic updates its row in place — that's what makes
     // a season rollover (new GCs, same sports) cheap.
     writeGroupRow_(sheet, existing[0].rowNumber, entry, existing[0]);
     return { action: 'updated', rowNumber: existing[0].rowNumber, above: null, duplicates: existing.length - 1 };
@@ -278,7 +278,7 @@ function sportCandidatesFromTitle_(title) {
 /**
  * Best keyword for a group title: the longest phrase from the title that
  * actually appears in a sport name in the tracker. Returns null when nothing
- * matches — the signal for /setup to ask for an explicit keyword rather than
+ * matches — the signal for /rollsetup to ask for an explicit keyword rather than
  * map a GC to a sport nobody is playing.
  */
 function guessSportKeyword_(title, sports) {
@@ -297,7 +297,7 @@ function guessSportKeyword_(title, sports) {
 // ---------------------------------------------------------------------
 
 /**
- * The Groups tab, created and headed if absent. /setup calls this so a brand
+ * The Groups tab, created and headed if absent. /rollsetup calls this so a brand
  * new spreadsheet doesn't need setupGroupsTab() run by hand first.
  */
 function ensureGroupsSheet_() {
@@ -327,7 +327,7 @@ function ensureGroupsSheet_() {
  * row. Only creates/seeds when missing — never overwrites your rows. The
  * example row has a blank Chat ID, so it's ignored until filled.
  *
- * Since the command layer landed, you shouldn't need this: /setup creates the
+ * Since the command layer landed, you shouldn't need this: /rollsetup creates the
  * tab and writes rows itself, from inside Telegram.
  */
 function setupGroupsTab() {
@@ -335,10 +335,10 @@ function setupGroupsTab() {
 
   if (sheet.getLastRow() < 2) {
     sheet.getRange(2, 1, 1, GROUPS_HEADERS.length).setValues([[
-      'Basketball', '', '', 'EXAMPLE — normally written by /setup from inside the GC. This row covers Men’s, Women’s, and 3x3. Rows with a blank Chat ID are ignored.', '', '', 'TRUE',
+      'Basketball', '', '', 'EXAMPLE — normally written by /rollsetup from inside the GC. This row covers Men’s, Women’s, and 3x3. Rows with a blank Chat ID are ignored.', '', '', 'TRUE',
     ]]);
   }
 
   sheet.autoResizeColumns(1, GROUPS_HEADERS.length);
-  Logger.log('Groups tab ready. Preferred path: run /setup in each GC’s Roll Call topic.');
+  Logger.log('Groups tab ready. Preferred path: run /rollsetup in each GC’s Roll Call topic.');
 }

@@ -12,10 +12,10 @@
  */
 
 const CMD = {
-  SETUP: '/setup',
+  SETUP: '/rollsetup',
   ROLLCALL: '/rollcall',
   NEXT: '/next',
-  WHEREAMI: '/whereami',
+  WHEREAMI: '/rollwhere',
   GROUPS: '/groups',
   UNMAP: '/unmap',
   HELP: '/help',
@@ -174,13 +174,63 @@ function runCommand_(ctx, handler) {
 }
 
 /**
- * Parses a message into { command, args }. Strips the @botname suffix Telegram
- * appends in groups and lowercases the command for case-insensitive matching.
+ * Parses a message into { command, args }, or null if it isn't for us.
+ *
+ * The `@botname` suffix is how Telegram disambiguates when two bots in a group
+ * answer the same command — and this bot shares its GCs with the /recap bot.
+ * Stripping the suffix without reading it makes the two indistinguishable:
+ * `/setup@SportsRecap_bot` would be handled here as well, and both bots would
+ * reply. So a command explicitly addressed to someone else is dropped.
+ *
+ * A *bare* command with no suffix still reaches every bot in the group, and
+ * nothing can be done about that from here — Telegram broadcasts it. That is
+ * the other half of why this bot's setup and diagnostic commands are named
+ * `/rollsetup` and `/rollwhere` rather than the `/setup` and `/whereami` the
+ * recap bot already owns (see §12.2). Renaming removes the collision; this
+ * check handles the case where someone types the suffix anyway.
  */
 function parseCommand_(text) {
   const tokens = String(text).trim().split(/\s+/);
   if (!tokens.length || !tokens[0] || tokens[0].charAt(0) !== '/') return null;
+
+  const at = tokens[0].indexOf('@');
+  if (at !== -1) {
+    // Only pay for the username lookup when a suffix is actually present.
+    const addressee = tokens[0].slice(at + 1).toLowerCase();
+    const me = getBotUsername_().toLowerCase();
+    if (me && addressee !== me) return null;
+  }
+
   return { command: tokens[0].split('@')[0].toLowerCase(), args: tokens.slice(1) };
+}
+
+/**
+ * This bot's @username, for the addressee check above.
+ *
+ * Cached because it is needed per-message and never changes in practice; the
+ * BOT_USERNAME script property short-circuits the API call entirely. Returns ''
+ * when it can't be determined, which makes parseCommand_ **fail open** — the
+ * bot answers a command that might not be for it, rather than going completely
+ * silent because getMe hiccuped. A stray reply is recoverable; a mute bot in
+ * the middle of a game day is not.
+ */
+function getBotUsername_() {
+  const configured = PropertiesService.getScriptProperties().getProperty('BOT_USERNAME');
+  if (configured) return String(configured).replace(/^@/, '');
+
+  try {
+    const cache = CacheService.getScriptCache();
+    const cached = cache.get('bot_username');
+    if (cached) return cached;
+
+    const me = telegramApi_('getMe');
+    if (!me.ok || !me.result || !me.result.username) return '';
+    cache.put('bot_username', me.result.username, 21600); // 6 hours
+    return me.result.username;
+  } catch (err) {
+    console.error(`getBotUsername_: ${err}`);
+    return '';
+  }
 }
 
 /** "@handle" when there is one, else a display name — for the _log audit trail. */
@@ -210,12 +260,12 @@ function handleMembershipChange_(change) {
   if (!joined) return;
 
   let guessLine = 'I couldn’t tell which sport this GC covers from its name.';
-  let command = '/setup <sport>';
+  let command = '/rollsetup <sport>';
   try {
     const guess = guessSportKeyword_(chat.title, collectSeasonSports_(getConfig()));
     if (guess) {
       guessLine = `Best guess from the group name: ${guess.keyword}`;
-      command = '/setup';
+      command = '/rollsetup';
     }
   } catch (err) {
     console.error(`greeting sport guess failed: ${(err && err.stack) || err}`);
@@ -348,10 +398,10 @@ function removeWebhook() {
 function publishCommandMenu() {
   const result = telegramApi_('setMyCommands', {
     commands: [
-      { command: 'setup', description: 'Map this topic as the sport’s Roll Call thread (admins)' },
+      { command: 'rollsetup', description: 'Map this topic as the sport’s Roll Call thread (admins)' },
       { command: 'rollcall', description: 'Post the next roll call for this GC now (admins)' },
       { command: 'next', description: 'Preview the next game and its roll call — posts nothing' },
-      { command: 'whereami', description: 'IDs, mapping, and bot status for this topic' },
+      { command: 'rollwhere', description: 'IDs, mapping, and bot status for this topic' },
       { command: 'groups', description: 'Every mapping, plus sports with no GC yet' },
       { command: 'unmap', description: 'Stop routing roll calls to this topic (admins)' },
       { command: 'help', description: 'What this bot can do' },

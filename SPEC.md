@@ -5,7 +5,7 @@ Automated Telegram roll call for The LaSallian's UAAP Season 89 coverage.
 **Platform:** Google Apps Script (bound to the Coverage Tracker spreadsheet)
 **Language:** JavaScript (Apps Script runtime, V8)
 **Triggers:** Time-driven, daily, 7:00–8:00 PM Asia/Manila — plus a Telegram webhook (Web App) for chat commands (§12)
-**Behaviour:** Reads the tracker, finds tomorrow's game events, posts one roll call message per event into each sport's own Telegram group. Onboarding a new group is done from inside Telegram with `/setup`.
+**Behaviour:** Reads the tracker, finds tomorrow's game events, posts one roll call message per event into each sport's own Telegram group. Onboarding a new group is done from inside Telegram with `/rollsetup`.
 
 Chosen over Python/Railway and GitHub Actions because it must run unattended for years after the original author leaves. No hosting account, no credentials file, no credit balance, no workflow-disable rule. Handoff is transferring ownership of the spreadsheet.
 
@@ -290,11 +290,11 @@ A `Groups` tab maps sport → destination:
 - **Row order is priority.** For each event, the first row whose keyword (case-insensitive, apostrophe-normalised) is a substring of the event's `sport` wins. Specific keywords (e.g. `3x3`) go above general ones (e.g. `Basketball`) when a sub-variant needs its own topic; otherwise the general row covers all its variants.
 - Rows missing a keyword or Chat ID are skipped (safe as templates).
 - **Column G `Active`:** `FALSE` retires a row without deleting it (`/unmap` writes this). **Blank counts as active** — the column was added after rows existed by hand, and an empty cell must never silently disable a working mapping.
-- Columns E and F are written by `/setup` for humans; the script never reads them.
+- Columns E and F are written by `/rollsetup` for humans; the script never reads them.
 - **Unmapped sport → admin/fallback chat.** `TELEGRAM_CHAT_ID` (Script Properties) is the admin chat: error alerts (§6) and any roll call with no matching Groups row go here, the latter with an appended warning so it's never silently lost.
 - `Thread ID` blank ⇒ send with no `message_thread_id` (posts to a non-forum group's main view).
 
-Rows are normally written by `/setup` from inside the GC (§12.2). `setupGroupsTab()` still creates and seeds the tab for a manual start; `harvestChatIds()` remains as a webhook-down fallback but is superseded by `/whereami`.
+Rows are normally written by `/rollsetup` from inside the GC (§12.2). `setupGroupsTab()` still creates and seeds the tab for a manual start; `harvestChatIds()` remains as a webhook-down fallback but is superseded by `/rollwhere`.
 
 **Insertion order is derived from the data, not guessed.** Appending a new keyword is wrong whenever an existing broader rule already matches the same games — a `3x3` row below `Basketball` never wins, because a 3x3 game's sport contains both words. Keyword *length* is not a usable proxy for specificity either (`basketball` is longer than `3x3`). So `upsertGroupMapping_` collects the sport strings the new keyword matches, finds the first existing rule that also matches any of them, and inserts directly above it. Nothing conflicting ⇒ append.
 
@@ -411,7 +411,7 @@ Write a README covering:
 - Non-game events — skipped, never announced
 - Per-event reminders at N hours before start — v2 at the earliest; current scope is one 7 PM run the day before
 - Reading replies or confirmations from staffers — the bot reads **commands** (§12) but never tracks who acknowledged a roll call
-- Editing the spreadsheet — read-only except the `_log` tab and, since §12, the `Groups` tab (written only by `/setup` and `/unmap`)
+- Editing the spreadsheet — read-only except the `_log` tab and, since §12, the `Groups` tab (written only by `/rollsetup` and `/unmap`)
 
 ---
 
@@ -427,7 +427,7 @@ Telegram delivers updates to the Web App's `/exec` URL. `doPost` (Webhook.js) pa
 Telegram group                     Apps Script                     Coverage Tracker
 ──────────────                     ───────────                     ────────────────
  admin types            webhook POST
- /setup          ──────────────────► doPost(e)
+ /rollsetup          ──────────────────► doPost(e)
                                         │  secret check
                                         ▼
                                     handleUpdate_()
@@ -452,31 +452,35 @@ Rules that are not optional:
 
 | Command | Who | Effect |
 |---|---|---|
-| `/setup [sport]` | admins | Map this topic as the sport's Roll Call destination. Writes the `Groups` row. |
+| `/rollsetup [sport]` | admins | Map this topic as the sport's Roll Call destination. Writes the `Groups` row. |
 | `/rollcall [sport] [force]` | admins | Post the next upcoming roll call for this GC now; logs `SENT`. |
 | `/next [sport]` | anyone | Preview the next game and its exact message. Sends nothing, logs nothing. |
-| `/whereami` | anyone | Chat/thread IDs, mapping, `DRY_RUN`, season, trigger status. |
+| `/rollwhere` | anyone | Chat/thread IDs, mapping, `DRY_RUN`, season, trigger status. |
 | `/groups` | anyone | Every mapping in priority order, plus sports with upcoming games and no GC. |
 | `/unmap` | admins | Sets `Active = FALSE` on this topic's rows. |
 | `/help`, `/start` | anyone | Command list + whether this GC is mapped. |
 
+**Why `/rollsetup` and `/rollwhere` and not the obvious `/setup` and `/whereami`:** this bot shares its groups with The LaSallian's `/recap` bot, which already owns `/setup`, `/recap`, `/sports`, and `/whereami`. Telegram broadcasts a bare command to **every** bot in a group — there is no way for a bot to claim a name — so both bots answered `/setup`, one with a success and one with a usage error. Distinct names are the only fix that works without asking staffers to remember a suffix. Do not "tidy" these back to `/setup`.
+
+The `@botname` suffix (`/rollsetup@SportsRollCall_bot`) is the complementary half: `parseCommand_` drops any command explicitly addressed to a *different* bot, so the two never both respond to a suffixed command either. It **fails open** when the bot's own username can't be resolved — answering a command that might not be ours beats going mute because `getMe` hiccuped. `BOT_USERNAME` (Script Property) short-circuits that lookup entirely.
+
 Admin gating uses `getChatMember` and **fails closed** — an API error denies. Anonymous admin posts carry no user id and will not pass; post normally.
 
-`/setup` and `/unmap` take `LockService.getScriptLock()`: the `Groups` write is read-modify-write and may insert a row, so two GCs being set up at once must serialise.
+`/rollsetup` and `/unmap` take `LockService.getScriptLock()`: the `Groups` write is read-modify-write and may insert a row, so two GCs being set up at once must serialise.
 
-### 12.3 `/setup` — deriving the sport
+### 12.3 `/rollsetup` — deriving the sport
 
-With no argument, the sport is inferred from the group's title; `/setup <keyword>` overrides it. The derivation:
+With no argument, the sport is inferred from the group's title; `/rollsetup <keyword>` overrides it. The derivation:
 
 1. Strip punctuation, lowercase, drop bare numbers and noise words (`gc`, `uaap`, `season`, …) — `TITLE_NOISE_WORDS` in Groups.js.
 2. Generate every contiguous n-gram of what's left, **longest first**, so `Beach Volleyball GC` prefers `beach volleyball` over the bare `volleyball` that would also swallow every indoor game.
 3. Take the first candidate that appears in a sport name **actually present in the tracker**.
 
-Step 3 is the important one. A keyword is only accepted if the tracker really has that sport, because the failure mode of a wrong mapping is invisible: no error, no alert, just a roll call that never arrives, discovered weeks later by the staffer who wasn't told about their game. Nothing matches ⇒ `/setup` refuses, lists the sports it does know, and asks for an explicit keyword.
+Step 3 is the important one. A keyword is only accepted if the tracker really has that sport, because the failure mode of a wrong mapping is invisible: no error, no alert, just a roll call that never arrives, discovered weeks later by the staffer who wasn't told about their game. Nothing matches ⇒ `/rollsetup` refuses, lists the sports it does know, and asks for an explicit keyword.
 
 The reply reports what it matched, how many upcoming games that covers, the next fixture, the exact destination, and — when it applies — that `DRY_RUN` is still `TRUE`.
 
-Re-running `/setup` for the same keyword **updates the row in place** rather than appending. That is what makes a season rollover cheap: same sports, new GCs, one `/setup` per group.
+Re-running `/rollsetup` for the same keyword **updates the row in place** rather than appending. That is what makes a season rollover cheap: same sports, new GCs, one `/rollsetup` per group.
 
 ### 12.4 Finding "the next game"
 

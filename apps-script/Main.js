@@ -108,7 +108,7 @@ function reportRun_(targetDate, outcomes, config) {
   outcomes.forEach((o) => {
     const who = `${o.event.sport || 'event'} — ${o.event.opponent} vs DLSU`;
     if (o.status === 'ERROR') problems.push(`• ${who}: FAILED — ${o.detail}`);
-    else if (!o.matched) problems.push(`• ${who}: no GC mapped — went to this chat instead. Run /setup in its GC.`);
+    else if (!o.matched) problems.push(`• ${who}: no GC mapped — went to this chat instead. Run /rollsetup in its GC.`);
     if (o.unassigned.length) problems.push(`• ${who}: ${o.unassigned.join(' and ')} unassigned in the tracker`);
   });
 
@@ -296,13 +296,13 @@ function testRouting(dateString) {
 // Command-layer helpers (SPEC.md §12) — verify without Telegram
 // ---------------------------------------------------------------------
 
-/** A group title to exercise the /setup guesser with from the editor. */
+/** A group title to exercise the /rollsetup guesser with from the editor. */
 const TEST_GROUP_TITLE = 'UAAP 88 Football GC';
 
 /**
- * What /setup would infer for a group title, and why. Run this before adding
+ * What /rollsetup would infer for a group title, and why. Run this before adding
  * the bot to a new GC if you want to know in advance whether the name is
- * guessable — a title it can't read is the one case /setup needs an argument.
+ * guessable — a title it can't read is the one case /rollsetup needs an argument.
  */
 function testSetupGuess(title) {
   title = title || TEST_GROUP_TITLE;
@@ -313,7 +313,7 @@ function testSetupGuess(title) {
 
   const guess = guessSportKeyword_(title, sports);
   if (!guess) {
-    Logger.log('No match — /setup would ask for an explicit keyword. Sports in the tracker:');
+    Logger.log('No match — /rollsetup would ask for an explicit keyword. Sports in the tracker:');
     sports.forEach((s) => Logger.log(`  ${s.sport} (${s.upcoming} upcoming)`));
     return;
   }
