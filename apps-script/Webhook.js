@@ -27,20 +27,62 @@ const CMD = {
 // ---------------------------------------------------------------------
 
 /**
- * Webhook entry point. MUST always return 200 — Telegram retries anything else,
+ * Webhook entry point. MUST always answer 200 — Telegram retries anything else,
  * and a retried /rollcall is a double post in the GC.
+ *
+ * ⚠️ RETURN NOTHING. Returning a ContentService output looks harmless and is
+ * not: Apps Script serves those via a 302 redirect to googleusercontent.com,
+ * Telegram does not follow redirects on a webhook response, and it reads the
+ * 302 as a failed delivery. It then retries the same update — which the handler
+ * happily processes again, replying again, forever. Falling off the end of
+ * doPost returns a bare empty 200, which is what Telegram wants.
+ *
+ * (Observed in production: one /help produced an endless stream of identical
+ * replies until the webhook was removed.)
  */
 function doPost(e) {
   try {
     if (!webhookSecretOk_(e)) {
       console.warn('Rejected webhook POST: missing or wrong secret');
-      return ContentService.createTextOutput('ok');
+      return;
     }
-    handleUpdate_(JSON.parse(e.postData.contents));
+    const update = JSON.parse(e.postData.contents);
+    if (isDuplicateUpdate_(update)) {
+      console.warn(`Ignored duplicate update_id ${update.update_id}`);
+      return;
+    }
+    handleUpdate_(update);
   } catch (err) {
     console.error(`doPost: ${(err && err.stack) || err}`);
   }
-  return ContentService.createTextOutput('ok');
+}
+
+/**
+ * Belt to the always-200 braces: remember each `update_id` briefly and refuse
+ * to process it twice.
+ *
+ * Telegram guarantees only *at least once* delivery — a response that arrives
+ * slowly, or not at all, means the same update comes back. Correctness cannot
+ * rest solely on every response being perfect, because the cost of being wrong
+ * is a duplicate roll call in a GC of staffers. Six hours comfortably outlives
+ * Telegram's retry window while keeping the cache tiny.
+ *
+ * Fails OPEN: if the cache is unavailable, process the update rather than drop
+ * it. A rare double reply beats commands silently doing nothing.
+ */
+function isDuplicateUpdate_(update) {
+  if (!update || typeof update.update_id === 'undefined') return false;
+
+  try {
+    const cache = CacheService.getScriptCache();
+    const key = `update_${update.update_id}`;
+    if (cache.get(key)) return true;
+    cache.put(key, '1', 21600); // 6 hours
+    return false;
+  } catch (err) {
+    console.error(`isDuplicateUpdate_: ${err}`);
+    return false;
+  }
 }
 
 /**
