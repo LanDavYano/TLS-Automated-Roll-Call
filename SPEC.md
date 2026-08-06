@@ -94,6 +94,7 @@ Key–value pairs, header in row 1.
 
 | A (`Key`) | B (`Value`) | Purpose |
 |---|---|---|
+| `SEASON_NUMBER` | `88` | Used in every roll call's title line (§4.1) — **must be updated each season** |
 | `SEASON_START_YEAR` | `2025` | See §3.2 — **must be updated each season** |
 | `SEASON_START_MONTH` | `9` | Month number the season begins |
 | `DRY_RUN` | `TRUE` | `TRUE` = log only, never send |
@@ -155,9 +156,21 @@ With `SEASON_START_YEAR=2025`, `SEASON_START_MONTH=9`: September–December → 
 An event qualifies for a roll call if **both** hold:
 
 1. Resolved date == today + `LEAD_DAYS` (default: tomorrow), in Asia/Manila
-2. Column E's event name resolves to an identifiable opponent per §3.4 (i.e. the `vs`/`v` split has exactly one side reading as `DLSU`)
+2. Column E is non-empty
 
-Column G (`Game day`) is **not** used as a filter — in practice it does not reliably distinguish real games from non-game entries, so an unambiguous opponent match is the source of truth instead. Non-game events (press conferences, opening ceremonies, `Light of Hope` show) have no `vs`/`v` opponent split and are **skipped entirely** as a natural consequence of §3.4's fallback behaviour, not because of an explicit flag check.
+That is the whole filter. Every row in a coverage tracker is, by definition, something the team is covering.
+
+**This replaced an earlier rule that required an identifiable opponent**, and the reason matters. Requiring a `DLSU vs X` split silently discarded three whole families of real work:
+
+- tournament-wide events — opening ceremonies, awardings, press conferences, the `Light of Hope` show
+- every multi-day tournament session — `Fencing Day 1`, `Athletics Day 2`, `Golf Day 1`
+- anything else typed without a matchup
+
+None of these throw, log, or alert when dropped. The roll call simply never arrives.
+
+Column G (`Game day`) is still **not** used: in the live tracker it reads `No` on most genuine games, so it distinguishes nothing.
+
+Being permissive here is safe because **routing is the second gate** (§4.4). An event whose text matches no `Groups` keyword goes to the admin chat with a warning rather than to a GC, so a spurious row surfaces for a human instead of being discarded without trace.
 
 ### 3.4 Event name parsing — column E
 
@@ -174,9 +187,31 @@ Steps:
 3. Split the matchup on `vs` or `v` (word-boundary, case-insensitive) → `DLSU`, `UE`
 4. Identify the opponent as the side that is **not** DLSU (do not assume DLSU is always first)
 
-Output message uses `[OPPONENT] vs DLSU` — i.e. **reversed** from the sheet — with the sport shown separately.
+Output message uses `[OPPONENT] vs DLSU` — i.e. **reversed** from the sheet — with the category in a bracket after it.
 
-Fallbacks: if there is no `:`, treat the whole string as the matchup with an empty sport. If there is no `vs`/`v`, use the raw string as the matchup and skip the reversal. **Never throw** on a malformed event name — degrade to raw text so the message still sends.
+Fallbacks: if there is no `:`, treat the whole string as the matchup with an empty sport. If there is no `vs`/`v`, the event has no opponent and renders its `detail` text instead. **Never throw** on a malformed event name — degrade to raw text so the message still sends.
+
+`parseEventName_` returns five fields:
+
+| Field | From | Example (`Fencing Day 1: Men's Sabre Individual`) |
+|---|---|---|
+| `sport` | before the last `:`, as typed | `Fencing Day 1` |
+| `family` | `sport` with round/day/category stripped | `Fencing` |
+| `category` | `Men's` / `Women's` / `''` | `Men's` |
+| `opponent` | the non-DLSU side of the `vs` split | `''` (`hasOpponent: false`) |
+| `detail` | the non-matchup remainder | `Men's Sabre Individual` |
+
+#### Sport family
+
+`family` is what session-mode collation groups by (§4.5) and what the title line is built from. Four steps, in order:
+
+1. **`Day N` delimits the sport from the session detail**, exactly like the colon does. `Fencing Day 1` is the sport; `Men's Sabre Individual` is one session of it. Safe to drop because collation is already scoped to a single date, and Day 1 and Day 2 are by definition different days. This is also what rescues colon-less names like `Athletics Day 1`.
+2. Strip round prefixes (`R1`, `R4:`) — they number the fixture, not the sport.
+3. Strip category words — they move to the bracket on the opponent line.
+
+What survives is deliberately specific. `3x3 Basketball` stays distinct from `Basketball`, `Blitz Chess` from `Chess`, `Beach Volleyball` from `Volleyball`: these are separate competitions that happen to share a GC, and must never be merged into one another's roll call. Conversely `Men's Football` and `Women's Football` both reduce to `Football`, so they *can* share one when the sport is in session mode.
+
+Verified against every real event name in `apps-script/tests/parser.test.js`.
 
 ### 3.5 Staffer parsing — columns Q and R
 
@@ -234,13 +269,14 @@ Join with `, ` in column order.
 
 ### 4.1 Format
 
-One message per event. Existing house format, to be reproduced closely:
+One template serves both modes (§4.5). A single football game and a fencing day with three sessions produce the same shape of message; only the block above the title differs. Two templates would drift apart, and a GC would see two different-looking roll calls depending on the sport.
 
 ```
 SPORTS @rollcall
 
-[SPORT]
-[OPPONENT] vs DLSU
+📍
+[headline lines]
+UAAP Season [SEASON_NUMBER] [FAMILY] Tournament
 [Month] [Day] ([Weekday])
 Time: [time]
 Venue: [venue]
@@ -248,14 +284,43 @@ Venue: [venue]
 Recap: [recap handles]
 Livetweet: [livetweet handles]
 
-Don't forget to discuss w your co-writer on how to distribute captions!
+Don't forget to discuss w your co-writer on how to distribute captions!!
 
-Deliverables: [comma-separated deliverables]
+Deliverables:
+[comma-separated deliverables]
 
 [conditional reminders]
 
 Thank you so much & enjoy!
 ```
+
+**Headline lines** — what is actually happening:
+
+- Rows *with* an opponent collapse per category, so five chess games become two lines. A single opponent skips the brackets; they exist to punctuate a list.
+  ```
+  [FEU, UST] vs DLSU [Men's]
+  ADMU vs DLSU [Women's]
+  ```
+- Rows *without* an opponent contribute their `detail` text instead — which is what a fencing or athletics day is made of. A group can contain both; opponents lead.
+  ```
+  Men's Sabre Individual
+  Women's Foil Team
+  ```
+
+**Title line** — `UAAP Season 88 Fencing Tournament`, from `SEASON_NUMBER` and the family. Events already named `UAAP …` (ceremonies, shows, press conferences) carry their own full title in the sheet and render it as typed; wrapping one would produce `UAAP Season 88 UAAP Season 88 Collegiate Basketball Press Conference Tournament`.
+
+**Weekday** is the full name (`Friday`), not the abbreviation.
+
+**Collapsed fields** — a group's rows are reduced to one line each:
+
+| Field | Rule |
+|---|---|
+| Time | All equal ⇒ that time. Differing ⇒ `Beginning at [earliest]`. None ⇒ `TBA`. A round hour prints as `10 am`, not `10:00 am`. |
+| Venue | Distinct venues in sheet order, comma-joined. Usually one — merged cells see to that. |
+| Deliverables | Union across the group, re-emitted in column order. |
+| Recap / Livetweet | Union across the group, deduplicated case-insensitively, order preserved. |
+
+Assignment is judged across the whole message: one staffer named on any row of a fencing day covers that day, and warning otherwise would cry wolf on every session that lists its staffers on the first row only.
 
 Send with `parse_mode: 'HTML'` (safer than Markdown — Telegram's legacy Markdown breaks on unescaped `_`, which appears in handles like `@handle2`). Escape `&`, `<`, `>` in all interpolated values.
 
@@ -274,22 +339,28 @@ Unassigned warnings replace the corresponding `Recap:`/`Livetweet:` line rather 
 
 ### 4.3 Multiple events
 
-Send **separate messages** per event, not one combined digest. Two games on the same day have different staffers, times, and venues; separate messages are easier to act on and to reply to.
+How many messages a day produces is decided per sport by the `Mode` column — see §4.5.
 
 ### 4.4 Per-sport routing (Telegram forum topics)
 
 Roll calls are **not** all sent to one chat. Each sport has its own Telegram group, and each group is a **forum** whose tabs are topics (threads). Roll calls post into that group's **Roll Call** topic. Selecting a topic requires two values on the Telegram `sendMessage` call: `chat_id` (the group) and `message_thread_id` (the topic).
 
+**One GC = one Roll Call topic = one row.** The GCs have per-category topics (`Men's`, `Women's`, `Beach 🏖️`, `3x3`) for discussion, but every roll call posts to the single Roll Call topic, so a group needs exactly one mapping.
+
 A `Groups` tab maps sport → destination:
 
-| A (`Sport keyword`) | B (`Chat ID`) | C (`Thread ID`) | D (`Notes`) | E (`Group title`) | F (`Last updated`) | G (`Active`) |
-|---|---|---|---|---|---|---|
-| `Basketball` | `-100…` | `<Roll Call topic id>` | covers Men's, Women's, 3x3 | `UAAP 88 Basketball GC` | `2025-09-01 19:04` | `TRUE` |
-| `Football` | `-100…` | `<Roll Call topic id>` | | `UAAP 88 Football GC` | | `TRUE` |
+| A (`Sport keyword(s)`) | B (`Chat ID`) | C (`Thread ID`) | D (`Notes`) | E (`Group title`) | F (`Last updated`) | G (`Active`) | H (`Mode`) |
+|---|---|---|---|---|---|---|---|
+| `3x3` | `-100…` | `<Roll Call topic id>` | Men's + Women's play as one block | `UAAP S88 Basketball` | `2025-09-01 19:04` | `TRUE` | `session` |
+| `Basketball` | `-100…` | `<Roll Call topic id>` | covers Men's and Women's | `UAAP S88 Basketball` | | `TRUE` | `event` |
+| `esports, valorant, nba2k` | `-100…` | `<Roll Call topic id>` | three titles, one GC | `UAAP S88 Esports` | | `TRUE` | `event` |
 
-- **Row order is priority.** For each event, the first row whose keyword (case-insensitive, apostrophe-normalised) is a substring of the event's `sport` wins. Specific keywords (e.g. `3x3`) go above general ones (e.g. `Basketball`) when a sub-variant needs its own topic; otherwise the general row covers all its variants.
+- **Column A holds a LIST.** `esports, valorant, nba2k` is one rule with three keywords, any of which routes here. Necessary because a GC's sports do not always share a word: `esports` appears in `Esports Mobile Legends: Bang Bang!` but not in `VALORANT` or `NBA2k`, and `baseball` is nowhere in `Women's Softball`. Before this, `/rollsetup` in the Esports GC would match the one title, report success, and **silently** never route the other two. A single keyword is just a list of one.
+- **Row order is priority.** For each event, the first row with a matching keyword wins. Specific keywords (`3x3`, `blitz chess`, `beach volleyball`) go above general ones (`basketball`, `chess`, `volleyball`) — they need separate rows when they collate differently or post elsewhere.
+- **Matching is two-pass** (`resolveTarget_`): every rule is tested against the event's `sport` first, then every rule against the **whole event text**. The second pass exists because not every row has a colon — `Athletics Day 1` and `Golf Day 2` carry their sport in a name the §3.4 split leaves with an empty `sport`, and without the fallback they match nothing forever. Running the passes in that order keeps a loose full-text hit from outranking a real sport-prefix one.
 - Rows missing a keyword or Chat ID are skipped (safe as templates).
 - **Column G `Active`:** `FALSE` retires a row without deleting it (`/unmap` writes this). **Blank counts as active** — the column was added after rows existed by hand, and an empty cell must never silently disable a working mapping.
+- **Column H `Mode`:** `session` or `event`. Blank, unknown, and misspelled all fall back to `event`, the safe direction — a wrong `event` just means extra messages, whereas a wrong `session` silently merges fixtures that should have been announced separately. See §4.5.
 - Columns E and F are written by `/rollsetup` for humans; the script never reads them.
 - **Unmapped sport → admin/fallback chat.** `TELEGRAM_CHAT_ID` (Script Properties) is the admin chat: error alerts (§6) and any roll call with no matching Groups row go here, the latter with an appended warning so it's never silently lost.
 - `Thread ID` blank ⇒ send with no `message_thread_id` (posts to a non-forum group's main view).
@@ -297,6 +368,22 @@ A `Groups` tab maps sport → destination:
 Rows are normally written by `/rollsetup` from inside the GC (§12.2). `setupGroupsTab()` still creates and seeds the tab for a manual start; `harvestChatIds()` remains as a webhook-down fallback but is superseded by `/rollwhere`.
 
 **Insertion order is derived from the data, not guessed.** Appending a new keyword is wrong whenever an existing broader rule already matches the same games — a `3x3` row below `Basketball` never wins, because a 3x3 game's sport contains both words. Keyword *length* is not a usable proxy for specificity either (`basketball` is longer than `3x3`). So `upsertGroupMapping_` collects the sport strings the new keyword matches, finds the first existing rule that also matches any of them, and inserts directly above it. Nothing conflicting ⇒ append.
+
+### 4.5 Collation — `session` vs `event`
+
+How many messages a sport produces in a day is **configuration, not inference.**
+
+`event` (the default) sends one roll call per fixture. Right for Football, Basketball, Volleyball, Baseball/Softball, and each Esports title: each game stands alone with its own staffers, time and venue.
+
+`session` merges every row matching that rule, on one date, into a single message. Right for Fencing, Athletics, Golf, 3x3 and Chess, where the categories play as one block. A `Fencing Day 1` with three bouts at 9 AM and 1 PM becomes one roll call, not three.
+
+**Why it cannot be derived.** `R4 Men's Blitz Chess:` and `R1 Men's Football:` are typed identically in the sheet and behave oppositely — chess merges, football does not. `Day N` is a reliable tell for the sports that use it, but Blitz Chess and 3x3 carry no such marker. There is no signal in the tracker that separates them, so the answer has to be stored. `/rollsetup` *suggests* `session` when it sees `Day N` in the sport's rows, but never assumes it.
+
+**Grouping key** — `(date, chat, thread, family)`. Venue plays no part: a session-mode sport running at two venues in one day still posts one message, listing both. Different sports resolve to different families and different GCs, so they never merge into each other regardless of sharing a date, a time, or a venue.
+
+Unmapped events (admin chat) always fall into `event` mode and are never silently merged with anything.
+
+**Changing mode mid-season** is a one-cell edit and nothing migrates — but it changes the shape of the ledger key (§5), so a roll call already sent under the old mode is invisible to a lookup under the new one. `findPriorSend_` therefore checks the alternate-mode keys too, and a hit under the other mode is reported as `SKIPPED_MODE_CHANGED` rather than `SKIPPED_DUPLICATE`: skipping is the safe half of that decision, but it can leave rows unannounced, so §6.1 tells a human instead of swallowing it.
 
 ---
 
@@ -310,11 +397,20 @@ Maintain a hidden tab `_log`:
 |---|---|---|
 | `Timestamp` | `EventKey` | `Status` |
 
-`EventKey` = a stable hash or concatenation of `resolvedDate + sport + opponent + time`.
+**The unit is the MESSAGE, not the row** — a session-mode sport posts one roll call covering several rows (§4.5), and keying on the row would let the same fencing day be announced three times.
 
-Before sending, check whether that `EventKey` already appears with status `SENT`. If so, skip and log `SKIPPED_DUPLICATE`.
+| Mode | `EventKey` |
+|---|---|
+| `session` | `year\|month\|day\|family\|session` |
+| `event` | `year\|month\|day\|family\|category\|opponent-or-detail\|time` |
 
-A **dry run must never write `SENT`** — doing so would poison the ledger and make a later real send skip the event as a duplicate. Dry runs log the distinct status `DRY_RUN`, which the duplicate check ignores (only `SENT` counts). So the recognised statuses are `SENT`, `SKIPPED_DUPLICATE`, `DRY_RUN`, and `ERROR`.
+The event-mode discriminator falls back to `detail` because a row without an opponent still has to be distinguishable from its neighbours; two rows of the same family, category and time would otherwise collide.
+
+The key deliberately **excludes the chat and thread.** Routing is derived from the event, and including the destination would make re-pointing a GC mid-season look like a brand new message and re-announce everything already sent.
+
+Before sending, `findPriorSend_` checks that key **and the keys the same rows would have had under the other mode** — see §4.5. A same-mode hit logs `SKIPPED_DUPLICATE`; an other-mode hit logs `SKIPPED_MODE_CHANGED` and is surfaced in the post-run report.
+
+A **dry run must never write `SENT`** — doing so would poison the ledger and make a later real send skip the message as a duplicate. Dry runs log the distinct status `DRY_RUN`, which the duplicate check ignores (only `SENT` counts). So the recognised statuses are `SENT`, `SKIPPED_DUPLICATE`, `SKIPPED_MODE_CHANGED`, `DRY_RUN`, and `ERROR`.
 
 Create the tab automatically if missing. Hide it from normal view.
 
@@ -379,8 +475,8 @@ Build and verify one step at a time. Do not proceed until the current step works
 | 1 | `testRead()` — log first 20 rows of the `TEST_MONTH` tab | Execution log shows raw values |
 | 2 | Config + Staffers readers | Log parsed config object and staffer map |
 | 3 | Date resolver with forward-fill | Log resolved date per row; confirm merged-cell rows inherit correctly |
-| 4 | Event filter (tomorrow + identifiable opponent) | Log matched rows for a hardcoded test date |
-| 5 | Event name parser (sport / opponent split) | Log structured objects for all `TEST_MONTH` rows |
+| 4 | Event filter (tomorrow + non-empty name) | Log matched rows for a hardcoded test date |
+| 5 | Event name parser (sport / family / category / opponent) | Log structured objects for all `TEST_MONTH` rows; check `family` when collation misbehaves |
 | 6 | Deliverables + staffer resolution | Log full event objects with handles |
 | 7 | Message renderer | Log the exact string that would be sent |
 | 8 | Telegram send | Set `DRY_RUN=FALSE`, confirm in test group |
@@ -396,7 +492,7 @@ For steps 3–7, `testEventFilter`/`testFullEventBuild`/`testMessageRender` (Mai
 
 Write a README covering:
 
-- **Annual task:** update `SEASON_START_YEAR` in the Config tab at the start of each season
+- **Annual task:** update `SEASON_NUMBER` and `SEASON_START_YEAR` in the Config tab at the start of each season
 - Adding a staffer: add a row to the `Staffers` tab, no code change needed
 - Changing send time: Apps Script → Triggers → edit the existing trigger
 - Pausing the bot: set `DRY_RUN` to `TRUE` in the Config tab
@@ -452,9 +548,9 @@ Rules that are not optional:
 
 | Command | Who | Effect |
 |---|---|---|
-| `/rollsetup [sport]` | admins | Map this topic as the sport's Roll Call destination. Writes the `Groups` row. |
+| `/rollsetup [sports] [session\|event] [force]` | admins | Map this topic as the Roll Call destination. Writes the `Groups` row. Keywords may be comma-separated; `session`/`event` sets the mode (§4.5); bare `/rollsetup session` retunes what is already mapped here; `force` maps a sport the tracker does not have yet. |
 | `/rollcall [sport] [force]` | admins | Post the next upcoming roll call for this GC now; logs `SENT`. |
-| `/next [sport]` | anyone | Preview the next game and its exact message. Sends nothing, logs nothing. |
+| `/next [sport]` | anyone | Preview the next roll call and its exact message, including how many rows it collates. Sends nothing, logs nothing. |
 | `/rollwhere` | anyone | Chat/thread IDs, mapping, `DRY_RUN`, season, trigger status. |
 | `/groups` | anyone | Every mapping in priority order, plus sports with upcoming games and no GC. |
 | `/unmap` | admins | Sets `Active = FALSE` on this topic's rows. |

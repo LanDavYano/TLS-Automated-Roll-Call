@@ -11,8 +11,9 @@ Automated Telegram roll call for **The LaSallian's** UAAP sports coverage. Every
 ## 1. What it does
 
 - Runs **once a night, ~7:00 PM Manila time**, unattended.
-- Looks at **tomorrow's** date (configurable) and finds every game on the tracker for that day.
-- Posts a formatted roll call per game: sport, matchup, time, venue, assigned Recap/Livetweet staffers (resolved to Telegram handles), deliverables, and reminders.
+- Looks at **tomorrow's** date (configurable) and finds every event on the tracker for that day — games, ceremonies, awardings, and multi-day tournament sessions alike.
+- Posts a formatted roll call: opponents by category, title, time, venue, assigned Recap/Livetweet staffers (resolved to Telegram handles), deliverables, and reminders.
+- **Collates where it should.** Sports whose categories play as one block — Fencing, Athletics, Golf, 3x3, Chess — get one roll call for the whole day instead of one per bout. Sports where each game stands alone get one per game. You choose per sport with `/rollsetup <sport> session`.
 - **Routes each roll call to its sport's own Telegram group** (Basketball, Football, …) — specifically into that group's **Roll Call** topic — so nothing gets collated into one messy chat.
 - **Onboards new groups from inside Telegram.** Add the bot to a sport's GC, open its Roll Call topic, type `/rollsetup` — it works out the sport from the group's name, checks that sport exists in the tracker, and wires it up. No IDs to copy. See §7.2.
 - **Pushes on demand.** `/rollcall` posts a GC's next roll call immediately and marks it done, so the nightly run skips it. No double posts.
@@ -44,12 +45,13 @@ Nightly trigger → main()
   → getConfig()            read the Config tab (DRY_RUN, LEAD_DAYS, season, …)
   → computeTargetDate_()   "tomorrow" in Asia/Manila
   → readMonthRows_()       read that month's tab (rows 5+)
-  → parseMonthEvents()     forward-fill dates/venues, parse names, times, deliverables, staffers
-  → filterEventsForDate_() keep only games on the target date
-  → for each game:
-      hasBeenSent_()       already posted? → skip (SKIPPED_DUPLICATE)
-      renderMessage_()     build the message text
-      sendTelegramMessage_ post to the group (unless DRY_RUN)
+  → parseMonthEvents()     forward-fill dates/venues/times, parse names, deliverables, staffers
+  → filterEventsForDate_() keep only events on the target date
+  → groupEventsForSending_ route each event, then collate per the sport's Mode
+  → for each message:
+      findPriorSend_()     already posted (either mode)? → skip
+      renderDigest_()      build the message text
+      sendTelegramMessage_ post to the group's Roll Call topic (unless DRY_RUN)
       logStatus_(SENT)     record it in the _log tab
 ```
 
@@ -100,7 +102,8 @@ The script is bound to the **Coverage Tracker** Google Sheet. It uses these tabs
 - Named **exactly** the English month, **no year**. This naming is load-bearing — don't rename them.
 - Data starts at **row 5** (rows 1–4 are headers).
 - Key columns: **B** day, **D** time, **E** event name (`Sport: DLSU vs OPPONENT`), **F** venue, **G** Game day, **H–O** deliverable flags, **Q** Recap staffers, **R** Livetweet staffers.
-- A game is announced when its **event name has an identifiable opponent** (`DLSU vs X`). The `Game day` column is **not** used to decide this; press conferences / ceremonies (no "vs") are skipped automatically.
+- **Every row with an event name gets a roll call.** Games, ceremonies, awardings, press conferences, and tournament days (`Fencing Day 1`, `Golf Day 2`) all count. The `Game day` column is **not** used — in the live tracker it reads `No` on most real games.
+- Nothing is silently dropped: an event whose name matches no `Groups` keyword goes to the **admin chat** with a warning, so you see it rather than losing it.
 
 ### `Config` tab
 Key/Value pairs the bot reads live on every run. Run `setupConfigTab()` once to create and populate it with descriptions. See §7 for what each key does.
@@ -109,10 +112,10 @@ Key/Value pairs the bot reads live on every run. Run `setupConfigTab()` once to 
 `Name | Handle`, one per row (row 1 is the header). Names must match what's typed in columns Q/R (case-insensitive, whitespace-trimmed). Add staffers by adding rows — no code change. See §7.
 
 ### `Groups` tab
-`Sport keyword | Chat ID | Thread ID | Notes | Group title | Last updated | Active`. Maps each sport to the Telegram group + Roll Call topic its roll calls post to. **Normally you never touch this tab** — `/rollsetup` writes it from inside Telegram (§7.2). Hand-editing still works; it's read live on every run. See §7.1.
+`Sport keyword(s) | Chat ID | Thread ID | Notes | Group title | Last updated | Active | Mode`. Maps each sport to the Telegram group + Roll Call topic its roll calls post to, and how many messages a day makes. **Normally you never touch this tab** — `/rollsetup` writes it from inside Telegram (§7.2). Hand-editing still works; it's read live on every run. See §7.1.
 
 ### `_log` tab (hidden, auto-created)
-`Timestamp | EventKey | Status | Detail`. Statuses: `SENT`, `SKIPPED_DUPLICATE`, `DRY_RUN`, `ERROR`. This is the idempotency ledger and the error trail — check it first when debugging.
+`Timestamp | EventKey | Status | Detail`. Statuses: `SENT`, `SKIPPED_DUPLICATE`, `SKIPPED_MODE_CHANGED`, `DRY_RUN`, `ERROR`. One row per **message**, not per sheet row — a session-mode sport logs one entry covering its whole day. This is the idempotency ledger and the error trail — check it first when debugging.
 
 ### Script Properties (NOT a tab)
 Telegram credentials live in **Project Settings → Script Properties**, so they aren't visible to spreadsheet editors:
@@ -142,7 +145,10 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 | **Stop a GC receiving roll calls** | In the GC: `/unmap`. Reversible — it sets `Active = FALSE`, it doesn't delete. |
 | **Look further ahead** | Config tab → change `LEAD_DAYS` (1 = tomorrow, 2 = two days out, …). |
 | **Change the send time** | Apps Script editor → **Triggers** (alarm-clock icon) → edit the `main` trigger's time. |
-| **⭐ Start a new season** | Config tab → update `SEASON_START_YEAR` (and `SEASON_START_MONTH` if the season starts a different month). **This is the one annual task — see §8.** |
+| **⭐ Start a new season** | Config tab → update `SEASON_NUMBER` and `SEASON_START_YEAR` (and `SEASON_START_MONTH` if the season starts a different month). **This is the annual task — see §8.** |
+| **Merge a sport's daily events into one roll call** | Run `/rollsetup <sport> session` in its GC. Use it for sports where the categories play as one block — Fencing, Athletics, Golf, 3x3, Chess. `/rollsetup <sport> event` undoes it. |
+| **Map a GC covering sports with no shared word** | `/rollsetup esports, valorant, nba2k` — one rule, several keywords. |
+| **Set up a GC before its month tab is filled in** | `/rollsetup <sport> force` — skips the "nothing in the tracker matches" guard. |
 
 ---
 
@@ -150,6 +156,7 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 
 | Key | Example | Purpose |
 |---|---|---|
+| `SEASON_NUMBER` | `88` | The UAAP season number, printed in every roll call's title line ("UAAP Season 88 Fencing Tournament"). **Update each season.** |
 | `SEASON_START_YEAR` | `2025` | The calendar year the season's opening month falls in. **Update each season.** |
 | `SEASON_START_MONTH` | `9` | Month number the season begins (9 = September). Month tabs `≥` this belong to `SEASON_START_YEAR`; earlier months roll to the next year. |
 | `DRY_RUN` | `FALSE` | `TRUE` = log only, never post. `FALSE` = live. Also the pause switch. |
@@ -163,17 +170,20 @@ Only these six keys are read. Values are validated with fallbacks, so a typo (e.
 
 Each sport has its own Telegram group, and roll calls post into that group's **Roll Call** topic. The `Groups` tab tells the bot where each sport goes:
 
-| Sport keyword | Chat ID | Thread ID (Roll Call topic) | Notes |
-|---|---|---|---|
-| `Basketball` | `-100…` | `12` | covers Men's, Women's, and 3x3 |
-| `Football` | `-100…` | `7` | |
-| `Chess` | `-100…` | `4` | |
+| Sport keyword(s) | Chat ID | Thread ID (Roll Call topic) | Notes | … | Mode |
+|---|---|---|---|---|---|
+| `3x3` | `-100…` | `12` | Men's + Women's play as one block | | `session` |
+| `Basketball` | `-100…` | `12` | covers Men's and Women's | | `event` |
+| `fencing` | `-100…` | `9` | | | `session` |
+| `esports, valorant, nba2k` | `-100…` | `17` | three titles, one GC | | `event` |
 
 How it works:
-- **Matching:** for each game, the bot finds the first row whose keyword appears in the game's sport name (case-insensitive). `Basketball` matches `R1 Men's Basketball`, `R1 Women's Basketball`, and `R1 Men's 3x3 Basketball` — all go to the same Roll Call topic.
-- **Row order = priority.** If you ever want a sub-variant in a *different* topic (say 3x3 in its own tab), add a `3x3` row **above** the `Basketball` row; the more specific row wins for matching games. Otherwise the general row covers everything.
-- **Chat ID vs Thread ID:** the Chat ID is the whole group; the Thread ID picks the topic (tab) within it. Every topic in the same group shares one Chat ID. Leave Thread ID blank only for a non-forum group.
-- **Unmapped sport:** if no row matches, the roll call goes to the admin chat (`TELEGRAM_CHAT_ID`) with a warning appended — so it's never lost. Add a row to fix routing.
+- **Matching:** for each event, the bot finds the first row whose keyword appears in the event name (case-insensitive). `Basketball` matches `R1 Men's Basketball` and `R1 Women's Basketball`.
+- **Column A takes a list.** `esports, valorant, nba2k` is one rule with three keywords. You need this whenever a GC's sports share no common word — `esports` is nowhere inside `VALORANT`, and `baseball` is nowhere inside `Women's Softball`. A single keyword is just a list of one.
+- **Row order = priority.** A sub-variant needing its own row — because it collates differently (`3x3`, `blitz chess`) or posts elsewhere — goes **above** the general row. `/rollsetup` works this out for you.
+- **Mode = how many messages a day makes.** `event` (the default) = one roll call per game. `session` = one roll call per day covering every category, for sports that play as a block: Fencing, Athletics, Golf, 3x3, Chess. Set it with `/rollsetup fencing session`.
+- **Chat ID vs Thread ID:** the Chat ID is the whole group; the Thread ID picks the topic (tab) within it. Every topic in the same group shares one Chat ID. Roll calls all go to the single Roll Call topic — the per-category topics (Men's, Women's, Beach) are for discussion. Leave Thread ID blank only for a non-forum group.
+- **Unmapped event:** if no row matches, the roll call goes to the admin chat (`TELEGRAM_CHAT_ID`) with a warning appended — so it's never lost. Add a row to fix routing.
 
 Two more columns, both written by `/rollsetup` and never read by the script: **Group title** (the GC's name when it was mapped) and **Last updated**. Column **Active** is the off switch — `FALSE` retires a row without deleting it, and **blank counts as active** so older hand-written rows keep working.
 
@@ -215,7 +225,9 @@ Notes worth knowing:
 - **Admin-gated commands fail closed.** If Telegram can't confirm you're an admin, the answer is no. Anonymous admin posts don't carry a user, so they never pass — post normally.
 - **`/rollcall` ignores `DRY_RUN` on purpose.** `DRY_RUN` pauses the *unattended* nightly run; you typing a command is not unattended. The reply tells you when `DRY_RUN` is still on.
 - **`/rollcall` and the nightly run share one ledger.** Whichever fires first wins; the other skips. That's what stops double roll calls.
-- **`/rollcall` refuses games more than 14 days out** unless you add `force` — that far ahead is nearly always the wrong GC.
+- **`/rollcall` refuses events more than 14 days out** unless you add `force` — that far ahead is nearly always the wrong GC.
+- **`/rollcall` posts the whole message**, not one row. For a session-mode sport that means the entire day — posting one fencing bout and leaving the other two would be worse than not posting at all.
+- **Changing a sport's mode mid-season is safe.** The ledger checks both modes' keys, so a roll call already sent is never posted twice. If it went out under the old mode, the run reports `SKIPPED_MODE_CHANGED` and asks you to look, rather than silently re-posting.
 - **Why `/rollsetup` and `/rollwhere`, not `/setup` and `/whereami`?** The `/recap` bot lives in these same groups and already owns `/setup`, `/recap`, `/sports`, and `/whereami`. Telegram sends a bare command to *every* bot in a group — no bot can claim a name — so both would answer, one succeeding and one erroring. Distinct names are the fix. **Don't rename them back.** If you ever add a third bot here, check its commands against this list first.
 
 ---
@@ -224,6 +236,8 @@ Notes worth knowing:
 
 At the start of each UAAP season, open the **Config** tab and set:
 
+- `SEASON_NUMBER` → the UAAP season number (e.g. `88`). Printed in every roll call's title line.
+- `SEASON_NUMBER` → the UAAP season number (e.g. `88`). Printed in every roll call's title line.
 - `SEASON_START_YEAR` → the year the season's first month falls in (e.g. `2025` for a season opening September 2025).
 - `SEASON_START_MONTH` → only if the opening month changes.
 

@@ -4,6 +4,7 @@
  */
 
 const CONFIG_DEFAULTS = {
+  SEASON_NUMBER: 88,
   SEASON_START_YEAR: 2025,
   SEASON_START_MONTH: 9,
   DRY_RUN: true,
@@ -21,6 +22,7 @@ const SUMMARY_MODES = ['ATTENTION', 'ALWAYS', 'NEVER'];
  * Booleans are written as the strings TRUE/FALSE the tab expects.
  */
 const CONFIG_KEY_META = [
+  ['SEASON_NUMBER', 88, 'UAAP season number, used in every roll call\'s title line ("UAAP Season 88 Fencing Tournament"). UPDATE THIS EACH SEASON.'],
   ['SEASON_START_YEAR', 2025, 'Calendar year the season starts (its Sep–Dec year). UPDATE THIS EACH SEASON.'],
   ['SEASON_START_MONTH', 9, 'Month number the season begins (9 = September). Tabs for months >= this belong to SEASON_START_YEAR; earlier months roll to the next year.'],
   ['DRY_RUN', 'TRUE', 'TRUE = log only, never send to Telegram. Set FALSE to go live; set TRUE to pause the bot.'],
@@ -82,6 +84,7 @@ function getConfig() {
   }
 
   return {
+    SEASON_NUMBER: toInt_(raw.SEASON_NUMBER, CONFIG_DEFAULTS.SEASON_NUMBER),
     SEASON_START_YEAR: toInt_(raw.SEASON_START_YEAR, CONFIG_DEFAULTS.SEASON_START_YEAR),
     SEASON_START_MONTH: toInt_(raw.SEASON_START_MONTH, CONFIG_DEFAULTS.SEASON_START_MONTH),
     DRY_RUN: toBool_(raw.DRY_RUN, CONFIG_DEFAULTS.DRY_RUN),

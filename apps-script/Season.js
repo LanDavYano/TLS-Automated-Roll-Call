@@ -102,10 +102,16 @@ function findNextEventForKeywords_(config, keywords) {
 }
 
 /**
- * Every distinct sport string in the season, with its game counts and next
- * fixture. /rollsetup validates a keyword against this list rather than trusting a
- * group title blindly, and /groups uses it to name the sports that still have
- * no GC mapped.
+ * Every distinct sport in the season, with its event counts and next fixture.
+ * /rollsetup validates a keyword against this list rather than trusting a group
+ * title blindly, and /groups uses it to name the sports that still have no GC
+ * mapped.
+ *
+ * Grouped by FAMILY, not by the sport string as typed. The raw strings carry
+ * round numbers and day numbers, so grouping by them would list "Fencing Day 1",
+ * "Fencing Day 2" and "Fencing Day 3" as three separate sports needing three
+ * separate GCs — and /groups' "no GC yet" list, which is the season's onboarding
+ * to-do list, would become noise nobody reads.
  */
 function collectSeasonSports_(config) {
   const tz = getSpreadsheetTimeZone_();
@@ -114,7 +120,7 @@ function collectSeasonSports_(config) {
 
   listSeasonMonths_(config).forEach((entry) => {
     monthEvents_(entry, config, tz).forEach((event) => {
-      const sport = String(event.sport || '').trim();
+      const sport = String(event.family || '').trim();
       if (!sport) return;
 
       const record = byName[sport] || (byName[sport] = { sport, total: 0, upcoming: 0, next: null });

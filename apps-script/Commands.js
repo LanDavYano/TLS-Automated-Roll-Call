@@ -32,22 +32,32 @@ function handleSetup_(ctx) {
   if (!requireAdmin_(ctx, '/rollsetup')) return;
 
   const config = getConfig();
+  const parsed = splitSetupArgs_(ctx.args);
+
+  // `/rollsetup session` with no keyword: adjust what is already mapped here.
+  // Changing a sport's mode is a routine mid-season correction, and retyping the
+  // keyword list to do it is exactly the friction this command exists to remove.
+  if (!parsed.keyword && parsed.mode) {
+    changeModeHere_(ctx, parsed.mode);
+    return;
+  }
+
   const sports = collectSeasonSports_(config);
-  if (!sports.length) {
+  if (!sports.length && !parsed.force) {
     sendReply_(ctx.chatId, ctx.threadId, [
-      'The tracker has no games in it yet, so there is nothing to map this GC to.',
+      'The tracker has no events in it yet, so there is nothing to map this GC to.',
       '',
       'Check that the month tabs are filled in, and that SEASON_START_YEAR in the Config tab is set to this season.',
+      'If you are setting this GC up ahead of the schedule, run /rollsetup <sport> force.',
     ].join('\n'));
     return;
   }
 
-  const explicit = ctx.args.join(' ').trim();
   let keyword;
   let source;
 
-  if (explicit) {
-    keyword = explicit;
+  if (parsed.keyword) {
+    keyword = parsed.keyword;
     source = 'the keyword you typed';
   } else {
     const guess = guessSportKeyword_(ctx.chatTitle, sports);
@@ -59,6 +69,8 @@ function handleSetup_(ctx) {
         formatSportList_(sports, 15),
         '',
         'Run /rollsetup <keyword> with a word from one of those — e.g. /rollsetup Football',
+        'Several keywords are fine when a GC covers sports that share no word:',
+        '  /rollsetup esports, valorant, nba2k',
       ].join('\n'));
       return;
     }
@@ -67,7 +79,11 @@ function handleSetup_(ctx) {
   }
 
   const matched = sports.filter((s) => sportMatchesKeyword_(s.sport, keyword));
-  if (!matched.length) {
+
+  // The guard exists because a mapping to a sport nobody plays is a roll call
+  // that never fires and fails silently months later. `force` is for the one
+  // legitimate case — building a GC before its month tab is filled in.
+  if (!matched.length && !parsed.force) {
     sendReply_(ctx.chatId, ctx.threadId, [
       `Nothing in the tracker matches "${keyword}".`,
       '',
@@ -75,6 +91,7 @@ function handleSetup_(ctx) {
       formatSportList_(sports, 15),
       '',
       'Run /rollsetup <keyword> with a word from one of those.',
+      `If this sport just isn't in the sheet yet, /rollsetup ${keyword} force maps it anyway.`,
     ].join('\n'));
     return;
   }
@@ -94,6 +111,12 @@ function handleSetup_(ctx) {
     return;
   }
 
+  // No mode typed and none on file: read the tracker for a hint. Sports that
+  // number their days ("Fencing Day 1", "Golf Day 2") run as one block, which is
+  // the shape session mode exists for — so suggest it rather than making the
+  // choice a thing you have to know about in advance.
+  const suggestSession = !parsed.mode && looksLikeSessionSport_(config, keyword);
+
   let result;
   try {
     result = upsertGroupMapping_({
@@ -101,6 +124,7 @@ function handleSetup_(ctx) {
       chatId: ctx.chatId,
       threadId: ctx.threadId,
       title: ctx.chatTitle,
+      mode: parsed.mode,
     }, matched.map((s) => s.sport));
   } finally {
     lock.releaseLock();
@@ -108,16 +132,29 @@ function handleSetup_(ctx) {
 
   const names = matched.map((s) => s.sport);
   const upcoming = matched.reduce((total, s) => total + s.upcoming, 0);
-  const next = findNextEventForKeywords_(config, [keyword]);
+  const next = findNextEventForKeywords_(config, splitKeywords_(keyword));
 
   const lines = [
     result.action === 'updated' ? `Updated the mapping for: ${keyword}` : `Mapped this GC to: ${keyword}`,
     `Matched from ${source}.`,
     '',
     `Tracker sports it covers (${names.length}): ${names.slice(0, 4).join(', ')}${names.length > 4 ? `, +${names.length - 4} more` : ''}`,
-    `Upcoming games: ${upcoming}`,
+    `Upcoming events: ${upcoming}`,
   ];
-  if (next) lines.push(`Next: ${formatEventDate_(next)} — ${next.opponent} vs DLSU, ${next.time}`);
+  if (next) lines.push(`Next: ${formatEventDate_(next)} — ${describeEvent_(next)}, ${next.time}`);
+
+  lines.push('', describeMode_(result.mode));
+  if (suggestSession && result.mode !== GROUP_MODES.SESSION) {
+    lines.push(
+      `⚠️ The tracker numbers this sport's days ("Day 1", "Day 2"), which usually means the categories play as one block.`,
+      'If so, run /rollsetup session here and they will post as a single roll call instead.'
+    );
+  }
+
+  if (!matched.length) {
+    lines.push('', `⚠️ Nothing in the tracker matches "${keyword}" yet — mapped anyway because you passed force.`,
+      'Roll calls start once the month tab has events whose names contain that keyword.');
+  }
 
   lines.push('');
   lines.push(ctx.threadId
@@ -179,8 +216,8 @@ function handleRollcall_(ctx) {
   const days = daysUntil_(event, today);
   if (days > MANUAL_PUSH_WARN_DAYS && !parsed.force) {
     sendReply_(ctx.chatId, ctx.threadId, [
-      `The next ${scope.label} game is ${formatEventDate_(event)} — ${days} days away.`,
-      `${event.opponent} vs DLSU, ${event.time}`,
+      `The next ${scope.label} event is ${formatEventDate_(event)} — ${days} days away.`,
+      `${describeEvent_(event)}, ${event.time}`,
       '',
       'Nothing posted. That’s far enough out that it’s usually the wrong GC or the wrong sport.',
       'Run /rollcall force if you really do want it now.',
@@ -188,39 +225,73 @@ function handleRollcall_(ctx) {
     return;
   }
 
-  const eventKey = buildEventKey_(event);
-  if (hasBeenSent_(eventKey) && !parsed.force) {
+  // Push the whole MESSAGE the nightly run would send, not just the row that
+  // happened to be found first. For a session-mode sport that means the entire
+  // day — posting one fencing bout and leaving the other two would be worse than
+  // not posting at all.
+  const group = buildGroupForEvent_(event, config);
+  if (!group) {
+    sendReply_(ctx.chatId, ctx.threadId, 'Found that event but couldn’t rebuild its roll call — check the Groups tab.');
+    return;
+  }
+
+  const groupKey = buildGroupKey_(group);
+  const prior = findPriorSend_(group);
+  if (prior && !parsed.force) {
     sendReply_(ctx.chatId, ctx.threadId, [
-      `Already posted: ${formatEventDate_(event)} — ${event.opponent} vs DLSU.`,
+      `Already posted: ${formatEventDate_(event)} — ${describeGroup_(group)}.`,
       '',
-      'Nothing sent. Use /rollcall force to post it a second time (if the first got deleted, say).',
+      prior.sameMode
+        ? 'Nothing sent. Use /rollcall force to post it a second time (if the first got deleted, say).'
+        : 'It went out under this sport’s previous mode, before you changed it. Nothing sent — check the GC first, then /rollcall force if the roll call really is missing.',
     ].join('\n'));
     return;
   }
 
-  const target = resolveTarget_(event, getGroupMap(), getAdminChatId_());
-  let message = renderMessage_(event, getStafferMap(), config);
+  const target = group.target;
+  let message = renderDigest_(group, getStafferMap(), config);
   if (!target.matched) {
-    message += `\n\n(⚠️ No Groups mapping for sport "${event.sport}" — posted to the admin chat. Add a row in the Groups tab.)`;
+    message += `\n\n(⚠️ No Groups mapping for "${group.events[0].rawName}" — posted to the admin chat. Add a row in the Groups tab.)`;
   }
 
   sendTelegramMessage_(message, { parseMode: 'HTML', chatId: target.chatId, threadId: target.threadId });
-  logStatus_(eventKey, 'SENT', `${target.chatId}${target.threadId ? '/' + target.threadId : ''} (manual: ${ctx.userName})`);
+  logStatus_(groupKey, 'SENT', `${target.chatId}${target.threadId ? '/' + target.threadId : ''} (manual: ${ctx.userName})`);
 
   const lines = [
-    `Posted: ${event.sport} — ${event.opponent} vs DLSU, ${formatEventDate_(event)}.`,
+    `Posted: ${describeGroup_(group)}, ${formatEventDate_(event)}.`,
     `Sent to ${describeTarget_(target, ctx)}.`,
     'Logged as sent, so tonight’s run will skip it.',
   ];
+  if (group.events.length > 1) {
+    lines.push(`Covered ${group.events.length} rows in one message (${group.family} runs in session mode).`);
+  }
   if (parsed.force && days <= MANUAL_PUSH_WARN_DAYS) lines.push('(forced — the duplicate check was skipped)');
   if (config.DRY_RUN) {
     lines.push('', 'Note: DRY_RUN is TRUE, so the nightly run is still paused. This manual post went out anyway.');
   }
   if (!target.matched) {
-    lines.push('', `⚠️ "${event.sport}" has no Groups rule, so it went to the admin chat. Run /rollsetup in the right GC.`);
+    lines.push('', `⚠️ "${event.rawName}" has no Groups rule, so it went to the admin chat. Run /rollsetup in the right GC.`);
   }
 
   sendReply_(ctx.chatId, ctx.threadId, lines.join('\n'));
+}
+
+/**
+ * The message one event belongs to. Re-reads its month tab so the neighbouring
+ * rows are available: a session-mode group is defined by what shares its date
+ * and family, which a single event object can't know on its own.
+ */
+function buildGroupForEvent_(event, config) {
+  const monthName = MONTH_NAMES[event.month - 1];
+  const events = parseMonthEvents(
+    readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_()
+  );
+  const sameDay = filterEventsForDate_(events, {
+    year: event.year, month: event.month, day: event.day,
+  });
+
+  const groups = groupEventsForSending_(sameDay, getGroupMap(), getAdminChatId_());
+  return groups.find((g) => g.events.some((e) => e.sheetRow === event.sheetRow)) || null;
 }
 
 // ---------------------------------------------------------------------
@@ -244,21 +315,34 @@ function handleNext_(ctx) {
     return;
   }
 
+  const group = buildGroupForEvent_(event, config);
+  if (!group) {
+    sendReply_(ctx.chatId, ctx.threadId, 'Found that event but couldn’t rebuild its roll call — check the Groups tab.');
+    return;
+  }
+
   const days = daysUntil_(event, todayInManila_());
-  const sent = hasBeenSent_(buildEventKey_(event));
-  const target = resolveTarget_(event, getGroupMap(), getAdminChatId_());
+  const sent = findPriorSend_(group);
+  const target = group.target;
 
   const header = [
     `Next up for ${scope.label}:`,
-    `${formatEventDate_(event)} — ${event.opponent} vs DLSU, ${event.time}`,
+    `${formatEventDate_(event)} — ${describeGroup_(group)}, ${collapseTimes_(group.events)}`,
     `${days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `In ${days} days`} · goes to ${describeTarget_(target, ctx)}`,
-    sent ? 'Status: already posted — /rollcall would skip it.' : 'Status: not posted yet.',
+    group.events.length > 1
+      ? `Collated: ${group.events.length} rows in one message (${group.family} is in session mode).`
+      : `Posting: one message per event (${group.family || 'this sport'} is in event mode).`,
+    sent
+      ? (sent.sameMode
+        ? 'Status: already posted — /rollcall would skip it.'
+        : 'Status: already posted under this sport’s previous mode — /rollcall would skip it.')
+      : 'Status: not posted yet.',
     '',
     '— preview only, nothing has been sent —',
     '',
   ].join('\n');
 
-  sendReply_(ctx.chatId, ctx.threadId, header + renderPreview_(event, getStafferMap(), config));
+  sendReply_(ctx.chatId, ctx.threadId, header + renderPreview_(group, getStafferMap(), config));
 }
 
 // ---------------------------------------------------------------------
@@ -285,13 +369,13 @@ function handleWhereami_(ctx) {
   } else {
     lines.push(`Mapped: ${rows.map((r) => r.label).join(', ')}`);
     rows.forEach((r) => {
-      lines.push(`  ${r.label} → ${r.threadId ? `thread ${r.threadId}` : 'main view'} (Groups row ${r.rowNumber})`);
+      lines.push(`  ${r.label} [${r.mode}] → ${r.threadId ? `thread ${r.threadId}` : 'main view'} (Groups row ${r.rowNumber})`);
     });
 
     const event = findNextEventForKeywords_(config, rows.map((r) => r.keyword));
     lines.push(event
-      ? `Next game: ${formatEventDate_(event)} — ${event.opponent} vs DLSU`
-      : 'Next game: none upcoming in the tracker.');
+      ? `Next event: ${formatEventDate_(event)} — ${describeEvent_(event)}`
+      : 'Next event: none upcoming in the tracker.');
   }
 
   lines.push(
@@ -337,8 +421,11 @@ function handleGroups_(ctx) {
     lines.push(`Mapped sports (${map.length}), in priority order:`);
     map.forEach((g) => {
       const where = g.title || `chat ${g.chatId}`;
-      lines.push(`• ${g.label} → ${where} ${g.threadId ? `(thread ${g.threadId})` : '(main view)'}`);
+      lines.push(
+        `• ${g.label} [${g.mode}] → ${where} ${g.threadId ? `(thread ${g.threadId})` : '(main view)'}`
+      );
     });
+    lines.push('', 'session = one roll call per day, all categories merged. event = one per fixture.');
   }
 
   const sports = collectSeasonSports_(config);
@@ -348,14 +435,14 @@ function handleGroups_(ctx) {
 
   lines.push('');
   if (unmapped.length) {
-    lines.push(`No GC yet — these have upcoming games (${unmapped.length}):`);
+    lines.push(`No GC yet — these have upcoming events (${unmapped.length}):`);
     unmapped.slice(0, 12).forEach((s) => {
       lines.push(`• ${s.sport} — ${s.upcoming} upcoming, next ${formatEventDate_(s.next)}`);
     });
     if (unmapped.length > 12) lines.push(`…and ${unmapped.length - 12} more`);
     lines.push('', 'Until a GC is mapped, their roll calls go to the admin chat with a warning.');
   } else {
-    lines.push('Every sport with upcoming games has a GC. ✅');
+    lines.push('Every sport with upcoming events has a GC. ✅');
   }
 
   const retired = allRows.filter((r) => !r.active).length;
@@ -409,17 +496,24 @@ function handleHelp_(ctx) {
   const rows = findGroupRowsForChat_(ctx.chatId, ctx.threadId);
 
   sendReply_(ctx.chatId, ctx.threadId, [
-    'TLS Roll Call bot — posts each game’s roll call the night before, from the coverage tracker.',
+    'TLS Roll Call bot — posts each event’s roll call the night before, from the coverage tracker.',
     '',
-    '/rollsetup [sport] — map this topic as the sport’s Roll Call thread (admins)',
+    '/rollsetup [sports] [session|event] [force] — map this topic as the Roll Call thread (admins)',
     '/rollcall [sport] [force] — post the next roll call for this GC now (admins)',
-    '/next — preview the next game and its roll call; posts nothing',
+    '/next — preview the next roll call; posts nothing',
     '/rollwhere — IDs, mapping, and bot status for this topic',
     '/groups — every mapping, plus sports with no GC yet',
     '/unmap — stop routing roll calls to this topic (admins)',
     '',
+    'Setup examples:',
+    '  /rollsetup — infer the sport from this GC’s name',
+    '  /rollsetup esports, valorant, nba2k — one GC covering sports that share no word',
+    '  /rollsetup fencing session — merge a day’s categories into one roll call',
+    '  /rollsetup session — change only the mode of what’s already mapped here',
+    '  /rollsetup taekwondo force — map ahead of the tracker being filled in',
+    '',
     rows.length
-      ? `This GC is mapped to: ${rows.map((r) => r.label).join(', ')}`
+      ? `This GC is mapped to: ${rows.map((r) => `${r.label} [${r.mode}]`).join(', ')}`
       : 'This GC is not mapped yet — run /rollsetup in its Roll Call topic.',
   ].join('\n'));
 }
@@ -474,6 +568,79 @@ function resolveCommandScope_(ctx, keywordArg) {
   }
 
   return { rows, keywords: rows.map((r) => r.keyword), label: rows.map((r) => r.label).join(' / ') };
+}
+
+/**
+ * Splits `/rollsetup baseball, softball session force` into
+ * { keyword: 'baseball, softball', mode: 'session', force: true }.
+ *
+ * Order-independent: `session`, `event` and `force` are recognised wherever they
+ * appear, and everything else is keyword text. The keyword tokens are rejoined
+ * with spaces rather than commas so a list survives Telegram's tokenising —
+ * "baseball," and "softball" come back as "baseball, softball".
+ */
+function splitSetupArgs_(args) {
+  const rest = [];
+  let mode = '';
+  let force = false;
+
+  (args || []).forEach((arg) => {
+    const token = String(arg).toLowerCase().replace(/,+$/, '');
+    if (token === GROUP_MODES.SESSION || token === GROUP_MODES.EVENT) mode = token;
+    else if (token === 'force') force = true;
+    else rest.push(arg);
+  });
+
+  return { keyword: rest.join(' ').trim().replace(/,+$/, ''), mode, force };
+}
+
+/** `/rollsetup session` — retune what is already mapped here, nothing else. */
+function changeModeHere_(ctx, mode) {
+  const rows = findGroupRowsForChat_(ctx.chatId, ctx.threadId);
+  if (!rows.length) {
+    sendReply_(ctx.chatId, ctx.threadId, [
+      `Nothing is mapped here yet, so there is no mode to change.`,
+      '',
+      'Map the sport first — e.g. /rollsetup fencing ' + mode,
+    ].join('\n'));
+    return;
+  }
+
+  rows.forEach((r) => setGroupMode_(r.rowNumber, mode));
+
+  sendReply_(ctx.chatId, ctx.threadId, [
+    `Set ${rows.map((r) => r.label).join(', ')} to ${mode} mode.`,
+    '',
+    describeMode_(mode),
+    '',
+    'Check it with /next.',
+  ].join('\n'));
+}
+
+/** One sentence on what a mode actually does, for every reply that reports one. */
+function describeMode_(mode) {
+  return mode === GROUP_MODES.SESSION
+    ? 'Mode: session — everything this rule covers on one date posts as a SINGLE roll call, with the categories listed inside it.'
+    : 'Mode: event — each fixture gets its own roll call.';
+}
+
+/**
+ * Whether the tracker numbers this sport's days. "Fencing Day 1", "Athletics Day
+ * 2" and "Golf Day 1" are how a block-format competition is written down, and
+ * they are the sports that want session mode — so /rollsetup can suggest it
+ * instead of leaving the setting to be discovered.
+ *
+ * Only a hint: Chess and 3x3 also run as sessions and carry no such marker.
+ */
+function looksLikeSessionSport_(config, keyword) {
+  const keywords = splitKeywords_(keyword);
+  const events = findUpcomingEvents_(
+    config,
+    todayInManila_(),
+    (e) => keywords.some((k) => sportMatchesKeyword_(e.sport, k) || sportMatchesKeyword_(e.rawName, k)),
+    8
+  );
+  return events.some((e) => /\bday\s*\d+/i.test(e.rawName));
 }
 
 /** Splits `/rollcall Football force` into { keyword: 'Football', force: true }. */
