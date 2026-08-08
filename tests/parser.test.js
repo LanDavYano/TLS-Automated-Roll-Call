@@ -1,7 +1,14 @@
 /**
  * Fixture tests for the pure layers — Parser.js, Groups.js, Template.js.
  *
- * Run with:  node apps-script/tests/parser.test.js
+ * Run with:  node tests/parser.test.js
+ *
+ * Lives OUTSIDE apps-script/ deliberately. Apps Script has no module system and
+ * concatenates every file in the project into a single global scope, so this
+ * file's `const { parseEventName_, ... }` would collide with Parser.js's real
+ * declaration and break the whole project at parse time — nightly run, commands,
+ * and every editor function at once. Keeping it out of the pushed directory is a
+ * stronger guarantee than a .claspignore rule that could be edited away.
  *
  * These files deliberately avoid SpreadsheetApp/Utilities/Logger so they can be
  * exercised outside the Apps Script runtime. This is what makes that property
@@ -26,7 +33,7 @@ const SOURCES = ['Parser.js', 'Groups.js', 'Template.js', 'Log.js'];
 
 const context = vm.createContext({ console });
 vm.runInContext(
-  SOURCES.map((f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8')).join('\n'),
+  SOURCES.map((f) => fs.readFileSync(path.join(__dirname, '..', 'apps-script', f), 'utf8')).join('\n'),
   context
 );
 

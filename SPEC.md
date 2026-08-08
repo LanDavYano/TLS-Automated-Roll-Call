@@ -17,6 +17,8 @@ Chosen over Python/Railway and GitHub Actions because it must run unattended for
 TLS-Automated-Roll-Call/
 ├── SPEC.md                  # this file
 ├── README.md                # handoff instructions for successors
+├── tests/                   # Node-only; NEVER pushed to Apps Script (§3.4)
+│   └── parser.test.js
 └── apps-script/             # clasp-managed, pushed to Apps Script
     ├── .clasp.json
     ├── appsscript.json
@@ -211,7 +213,7 @@ Fallbacks: if there is no `:`, treat the whole string as the matchup with an emp
 
 What survives is deliberately specific. `3x3 Basketball` stays distinct from `Basketball`, `Blitz Chess` from `Chess`, `Beach Volleyball` from `Volleyball`: these are separate competitions that happen to share a GC, and must never be merged into one another's roll call. Conversely `Men's Football` and `Women's Football` both reduce to `Football`, so they *can* share one when the sport is in session mode.
 
-Verified against every real event name in `apps-script/tests/parser.test.js`.
+Verified against every real event name in `tests/parser.test.js` (`node tests/parser.test.js`). That file lives outside `apps-script/` on purpose — Apps Script concatenates every pushed file into one global scope, so a test file's declarations collide with the source's and break the project at parse time.
 
 ### 3.5 Staffer parsing — columns Q and R
 

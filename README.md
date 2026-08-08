@@ -75,6 +75,9 @@ Telegram → webhook POST → doPost()
 TLS-Automated-Roll-Call/
 ├── README.md              ← this file (handoff)
 ├── SPEC.md                ← full technical specification
+├── tests/
+│   └── parser.test.js     Node fixture tests — `node tests/parser.test.js`
+│                          ⚠️ MUST stay outside apps-script/ — see §9
 └── apps-script/           ← the deployed code (clasp-managed)
     ├── .clasp.json          links this folder to the Apps Script project (scriptId)
     ├── appsscript.json      project manifest (timezone = Asia/Manila, V8)
@@ -256,6 +259,20 @@ You only need this section if you're **changing code**. Day-to-day operation (§
 cd apps-script
 clasp push            # local files → Apps Script (this is the deploy)
 ```
+
+**Run the tests first** (from the repo root, not `apps-script/`):
+```bash
+node tests/parser.test.js
+```
+
+> ⚠️ **Never put a test file inside `apps-script/`.** Apps Script has no module
+> system — it concatenates every file in the project into one global scope. A
+> test file's `const { parseEventName_, … }` therefore collides with `Parser.js`'s
+> real declaration and throws `SyntaxError: Identifier ... has already been
+> declared` **at parse time**, which kills the nightly run, every command, and
+> every editor function at once. `.claspignore` guards against it, but keeping
+> tests out of the pushed directory is the guarantee that doesn't depend on a
+> config file staying correct.
 
 **Save to GitHub (separate from deploy):**
 ```bash
