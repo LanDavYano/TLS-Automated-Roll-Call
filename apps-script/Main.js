@@ -217,10 +217,25 @@ function testRead() {
  * on the venue — where in the nightly run it would only ever show up as silence.
  */
 function testLayout(monthName) {
-  monthName = monthName || TEST_MONTH;
   const config = getConfig();
+
+  // Defaults to the first month tab this spreadsheet actually has, not a
+  // hardcoded one: the whole point of this helper is inspecting a tracker you
+  // haven't seen, where the tab names are part of what you're checking.
+  const months = listSeasonMonths_(config);
+  if (!monthName && !months.length) {
+    throw new Error(
+      `No month tabs found in "${getSpreadsheet_().getName()}". Tabs must be named ` +
+      'exactly after an English month ("September"), with no year.'
+    );
+  }
+  monthName = monthName || months[0].name;
+
   const cols = columnsFor_(config);
   const last = cols.DELIVERABLES_START + DELIVERABLE_LABELS.length - 1;
+
+  Logger.log(`Spreadsheet: ${getSpreadsheet_().getName()}`);
+  Logger.log(`Month tabs found: ${months.map((m) => `${m.name} ${m.year}`).join(', ') || '(none)'}`);
 
   Logger.log(
     `DATA_START_COLUMN = ${columnLetter_(config.DATA_START_COLUMN)} — reading "${monthName}" ` +

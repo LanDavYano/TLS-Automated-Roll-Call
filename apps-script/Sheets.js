@@ -101,10 +101,27 @@ function describeActiveSpreadsheet_() {
   }
 }
 
+/**
+ * A month tab by name.
+ *
+ * The error names the tabs that DO exist, because the two ways this fails look
+ * identical from the message alone: the tracker genuinely has no tab for that
+ * month yet, or the bot is pointed at a spreadsheet whose tabs are named
+ * differently (or at the wrong spreadsheet entirely).
+ */
 function getMonthSheet(monthName) {
-  const sheet = getSpreadsheet_().getSheetByName(monthName);
-  if (!sheet) throw new Error(`Sheet not found: ${monthName}`);
-  return sheet;
+  const ss = getSpreadsheet_();
+  const sheet = ss.getSheetByName(monthName);
+  if (sheet) return sheet;
+
+  const present = ss.getSheets()
+    .map((s) => String(s.getName()).trim())
+    .filter((name) => MONTH_NAMES.some((m) => m.toLowerCase() === name.toLowerCase()));
+
+  throw new Error(
+    `Sheet not found: ${monthName} (in "${ss.getName()}"). Month tabs present: ` +
+    `${present.join(', ') || 'none — tabs must be named exactly after an English month, with no year'}.`
+  );
 }
 
 /**
