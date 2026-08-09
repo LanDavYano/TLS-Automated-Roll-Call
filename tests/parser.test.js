@@ -48,7 +48,7 @@ const {
   parseEventName_, sportFamily_, eventCategory_, resolveTarget_, normalizeMode_,
   normalizeForMatch_, splitKeywords_, sportMatchesKeyword_, groupEventsForSending_,
   renderDigest_, collapseTimes_, buildGroupKey_, findPriorSend_,
-  parseMonthEvents, columnsFor_,
+  missingStafferAssignments_, parseMonthEvents, columnsFor_,
 } = context;
 
 let failures = 0;
@@ -265,11 +265,56 @@ check('UAAP-named events keep their own title',
 check('and are not double-wrapped',
   ceremonyMsg.indexOf('UAAP Season 88 UAAP') === -1, true);
 
-const unassigned = groupEventsForSending_(
-  [event("R1 Men's Football: DLSU v UE", { recapNames: [], livetweetNames: [] })], groupMap, 'ADMIN'
+// ---------------------------------------------------------------------
+// "Livetweet" names two different columns: the Yes/No deliverable flag at
+// offset +7 and the staffer names at +16. A blank staffer cell is only a
+// mistake when the flag says the deliverable was actually wanted — warning on a
+// game nobody is meant to livetweet is a false alarm, and it reached both the
+// roll call and the nightly admin summary.
+// ---------------------------------------------------------------------
+
+const wanted = groupEventsForSending_(
+  [event("R1 Men's Football: DLSU v UE",
+    { deliverables: ['HN', 'Livetweet', 'Recap'], recapNames: [], livetweetNames: [] })],
+  groupMap, 'ADMIN'
 )[0];
-check('unassigned warning still fires',
-  renderDigest_(unassigned, staffers, config).indexOf('⚠️ Recap: UNASSIGNED') !== -1, true);
+const wantedMsg = renderDigest_(wanted, staffers, config);
+check('warning fires when the deliverable was asked for',
+  [wantedMsg.indexOf('⚠️ Recap: UNASSIGNED') !== -1,
+   wantedMsg.indexOf('⚠️ Livetweet: UNASSIGNED') !== -1], [true, true]);
+check('...and the admin summary agrees', missingStafferAssignments_(wanted.events), ['Recap', 'Livetweet']);
+
+const notWanted = groupEventsForSending_(
+  [event("R1 Men's Football: DLSU v UE",
+    { deliverables: ['HN', 'Recap'], recapNames: ['Jireh'], livetweetNames: [] })],
+  groupMap, 'ADMIN'
+)[0];
+const notWantedMsg = renderDigest_(notWanted, staffers, config);
+check('Livetweet: No + blank cell drops the line entirely',
+  notWantedMsg.indexOf('Livetweet') === -1, true);
+check('...without disturbing the Recap line', notWantedMsg.indexOf('Recap: @jirehfs') !== -1, true);
+check('...or reaching the admin summary', missingStafferAssignments_(notWanted.events), []);
+check('...and leaves no double blank line', notWantedMsg.indexOf('\n\n\n') === -1, true);
+
+// An explicit assignment outranks the flag: never hide a named staffer.
+const namedAnyway = groupEventsForSending_(
+  [event("R1 Men's Football: DLSU v UE",
+    { deliverables: ['HN'], recapNames: [], livetweetNames: ['Migo'] })],
+  groupMap, 'ADMIN'
+)[0];
+check('a named staffer renders even with the flag off',
+  renderDigest_(namedAnyway, staffers, config).indexOf('Livetweet: @migoyaki') !== -1, true);
+
+// Neither write-up wanted: both lines go, and the message still reads cleanly.
+const neither = groupEventsForSending_(
+  [event("R1 Men's Football: DLSU v UE",
+    { deliverables: ['HN'], recapNames: [], livetweetNames: [] })],
+  groupMap, 'ADMIN'
+)[0];
+const neitherMsg = renderDigest_(neither, staffers, config);
+check('both lines droppable at once',
+  [neitherMsg.indexOf('Recap') === -1, neitherMsg.indexOf('Livetweet') === -1], [true, true]);
+check('...and no blank-line gap is left behind', neitherMsg.indexOf('\n\n\n') === -1, true);
 
 section('Idempotency across a mid-season mode change');
 
@@ -351,6 +396,14 @@ check('deliverables map to their labels, in column order',
 check('the photo column between IGs and Recap is skipped',
   [parsedAtB[0].recapNames, parsedAtB[0].livetweetNames], [['Lance'], ['Wyn']]);
 check('comma-separated staffers still split', parsedAtA[1].recapNames, ['Lance', 'Mika']);
+
+// End to end on the real shape that produced the false alarm: row 2 has the
+// Livetweet flag at +7 set to No and the Livetweet staffer cell at +16 blank.
+// Nobody is meant to livetweet it, so the roll call must not ask who forgot to.
+const valorant = groupEventsForSending_([parsedAtB[1]], groupMap, 'ADMIN')[0];
+check('a No-flagged, unstaffed Livetweet raises nothing, sheet to message',
+  [renderDigest_(valorant, staffers, config).indexOf('Livetweet') === -1,
+   missingStafferAssignments_(valorant.events)], [true, []]);
 
 // The failure this guards: reading one column left of the real Date block means
 // day resolves off the weekday text, which is not a number and never will be.

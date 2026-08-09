@@ -63,9 +63,9 @@ function sendGroupRollCall_(group, stafferMap, config) {
   // Assignment is judged across the whole message: one staffer named on any row
   // of a fencing day covers that day's roll call, and warning otherwise would
   // cry wolf on every session that lists its staffers on the first row only.
-  const unassigned = [];
-  if (!unionStafferNames_(group.events, 'recapNames').length) unassigned.push('Recap');
-  if (!unionStafferNames_(group.events, 'livetweetNames').length) unassigned.push('Livetweet');
+  // The same predicate the message itself uses, so the admin summary can never
+  // report a gap the roll call didn't show (or vice versa).
+  const unassigned = missingStafferAssignments_(group.events);
 
   const groupKey = buildGroupKey_(group);
   const prior = findPriorSend_(group);

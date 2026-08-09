@@ -221,13 +221,51 @@ function resolveStafferHandles_(names, stafferMap) {
 }
 
 /**
- * §4.2 — an unassigned column (no names) renders as a warning line when
- * SHOW_UNASSIGNED_WARNING is on; the warning *replaces* the normal line,
- * it doesn't appear alongside it.
+ * The two staffer columns, paired with the deliverable flag that decides whether
+ * each one is even wanted for a given game.
+ *
+ * The labels are load-bearing: they are matched against DELIVERABLE_LABELS
+ * (Parser.js) to read the flag, so `Recap` and `Livetweet` here must stay
+ * spelled exactly as they are there. The sheet uses the same word for two
+ * different columns — the Yes/No flag at offset +7 and the staffer names at
+ * +16 — and this pairing is the only place the two are tied together.
  */
-function renderStafferLine_(label, names, stafferMap, showUnassignedWarning) {
-  if (names.length === 0 && showUnassignedWarning) {
-    return `⚠️ ${label}: UNASSIGNED`;
+const STAFFER_FIELDS = [
+  { label: 'Recap', field: 'recapNames' },
+  { label: 'Livetweet', field: 'livetweetNames' },
+];
+
+/**
+ * The staffer columns a group genuinely needs filled: the deliverable is marked
+ * Yes somewhere in the group, and nobody is named for it.
+ *
+ * A blank staffer cell is only a mistake when the deliverable was asked for. A
+ * game with `Livetweet: No` has nobody assigned *because there is nothing to
+ * assign* — warning about it trains people to ignore the warning. Shared with
+ * the admin summary (Main.js) so the roll call and the nightly report can never
+ * disagree about what counts as missing.
+ */
+function missingStafferAssignments_(events) {
+  const deliverables = unionDeliverables_(events);
+  return STAFFER_FIELDS
+    .filter(({ label, field }) =>
+      deliverables.indexOf(label) !== -1 && unionStafferNames_(events, field).length === 0)
+    .map(({ label }) => label);
+}
+
+/**
+ * §4.2 — one staffer line, or nothing at all.
+ *
+ * Three outcomes. Names present: render them, whatever the flag says — an
+ * explicit assignment outranks a No, and hiding a named staffer would be worse
+ * than a stray line. No names and the deliverable wasn't requested: return ''
+ * and the line is dropped from the message entirely. No names but it *was*
+ * requested: the warning, which replaces the normal line rather than joining it.
+ */
+function renderStafferLine_(label, names, stafferMap, showUnassignedWarning, isRequested) {
+  if (names.length === 0) {
+    if (!isRequested) return '';
+    if (showUnassignedWarning) return `⚠️ ${label}: UNASSIGNED`;
   }
   const resolved = resolveStafferHandles_(names, stafferMap).map(escapeHtml_);
   return `${label}: ${resolved.join(', ')}`;
@@ -251,6 +289,18 @@ function renderDigest_(group, stafferMap, config) {
     reminders.push('And pls prep buzzer before the game ends!');
   }
 
+  // Dropped lines are filtered out here rather than in the array below, where an
+  // '' would be indistinguishable from the deliberate blank separator lines.
+  const stafferLines = STAFFER_FIELDS
+    .map(({ label, field }) => renderStafferLine_(
+      label,
+      unionStafferNames_(events, field),
+      stafferMap,
+      config.SHOW_UNASSIGNED_WARNING,
+      deliverables.indexOf(label) !== -1
+    ))
+    .filter((line) => line !== '');
+
   const lines = [
     'SPORTS @rollcall',
     '',
@@ -260,15 +310,19 @@ function renderDigest_(group, stafferMap, config) {
     `${monthName} ${group.day} (${group.weekday})`,
     `Time: ${escapeHtml_(collapseTimes_(events))}`,
     `Venue: ${escapeHtml_(collapseVenues_(events))}`,
-    '',
-    renderStafferLine_('Recap', unionStafferNames_(events, 'recapNames'), stafferMap, config.SHOW_UNASSIGNED_WARNING),
-    renderStafferLine_('Livetweet', unionStafferNames_(events, 'livetweetNames'), stafferMap, config.SHOW_UNASSIGNED_WARNING),
+  ];
+
+  // Guarded, so a game wanting neither write-up doesn't leave the two blank
+  // separators stacked into a double gap.
+  if (stafferLines.length) lines.push('', ...stafferLines);
+
+  lines.push(
     '',
     "Don't forget to discuss w your co-writer on how to distribute captions!!",
     '',
     'Deliverables:',
-    deliverables.join(', '),
-  ];
+    deliverables.join(', ')
+  );
 
   if (reminders.length) {
     lines.push('');

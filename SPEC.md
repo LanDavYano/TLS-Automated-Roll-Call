@@ -235,7 +235,7 @@ Resolve each name via the `Staffers` tab (case-insensitive, trimmed). If a name 
 Recap: @handle1, Staffer 2 (no handle on file)
 ```
 
-If a cell is empty and `SHOW_UNASSIGNED_WARNING` is TRUE, emit a warning line (§4.2).
+If a cell is empty, `SHOW_UNASSIGNED_WARNING` is TRUE **and that column's deliverable flag is `Yes`**, emit a warning line (§4.2). An empty cell whose flag is `No` drops the line instead — nobody was meant to be assigned.
 
 ### 3.6 Time parsing — column D
 
@@ -340,12 +340,17 @@ Send with `parse_mode: 'HTML'` (safer than Markdown — Telegram's legacy Markdo
 |---|---|
 | `HN` is a deliverable | `Pls send HN at least 30 min before the game starts!` |
 | `Buzzer` is a deliverable | `And pls prep buzzer before the game ends!` |
-| Column Q empty | `⚠️ Recap: UNASSIGNED` |
-| Column R empty | `⚠️ Livetweet: UNASSIGNED` |
+| Column Q empty, `Recap Article` (+12) is `Yes` | `⚠️ Recap: UNASSIGNED` |
+| Column R empty, `Livetweet` (+7) is `Yes` | `⚠️ Livetweet: UNASSIGNED` |
+| Column Q or R empty, its flag is `No` | *(the line is dropped entirely)* |
 
 The HN and Buzzer reminders are emitted **only** when those deliverables are checked. Both, one, or neither may appear.
 
 Unassigned warnings replace the corresponding `Recap:`/`Livetweet:` line rather than appearing alongside it.
+
+**A blank staffer cell is only a problem when the deliverable was asked for.** `Livetweet` names two different columns — the Yes/No flag at +7 and the staffer names at +16 — and they must be read together. A game flagged `Livetweet: No` has nobody in column R *because there is nothing to assign*; warning about it is a false alarm that trains people to ignore the warning. `missingStafferAssignments_` (Template.js) is the single predicate for this, shared with the admin summary (§6.1) so the roll call and the nightly report can never disagree about what is missing.
+
+The flag only decides what happens when the cell is **empty**. A staffer named against a `No` flag is still rendered: an explicit assignment outranks the flag, and silently hiding a tagged person would be the worse failure.
 
 ### 4.3 Multiple events
 
@@ -447,7 +452,7 @@ Guard individually so one bad row does not kill the whole run: if a single event
 | `ALWAYS` | Report every night, clean or not |
 | `NEVER` | No report; error alerts (§6) still send |
 
-Three things count as needing a human: an event whose sport has **no Groups mapping** (its roll call went to the admin chat instead of the staffers), a **blank Recap or Livetweet cell** for a game happening tomorrow, and an event that **failed outright**.
+Three things count as needing a human: an event whose sport has **no Groups mapping** (its roll call went to the admin chat instead of the staffers), a **blank Recap or Livetweet cell on a game that is flagged for that deliverable** tomorrow, and an event that **failed outright**. The middle one uses `missingStafferAssignments_` — the same predicate the message itself uses (§4.2) — so a game flagged `Livetweet: No` is silent here too.
 
 The default is silence-on-success by design. A nightly "all good" message is read for a week and ignored forever after, which is worse than no message at all — the signal has to stay rare to stay meaningful. A duplicate skip is not reported as a problem: it is the idempotency ledger working, and it is the *expected* state for any game already pushed manually with `/rollcall`.
 

@@ -167,8 +167,8 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 | `SEASON_START_MONTH` | `9` | Month number the season begins (9 = September). Month tabs `≥` this belong to `SEASON_START_YEAR`; earlier months roll to the next year. |
 | `DRY_RUN` | `FALSE` | `TRUE` = log only, never post. `FALSE` = live. Also the pause switch. |
 | `LEAD_DAYS` | `1` | How many days ahead to look. `1` = announce tomorrow's games tonight. |
-| `SHOW_UNASSIGNED_WARNING` | `TRUE` | `TRUE` = show a ⚠️ UNASSIGNED line when a Recap/Livetweet cell is blank. |
-| `SUMMARY_MODE` | `ATTENTION` | Nightly report to the admin chat. `ATTENTION` = only when something needs a human (a sport with no GC, a blank staffer cell, a failed event). `ALWAYS` = every night. `NEVER` = errors only. |
+| `SHOW_UNASSIGNED_WARNING` | `TRUE` | `TRUE` = show a ⚠️ UNASSIGNED line when a Recap/Livetweet cell is blank **and that deliverable is flagged `Yes`**. A blank cell on a `No`-flagged game drops the line instead of warning. |
+| `SUMMARY_MODE` | `ATTENTION` | Nightly report to the admin chat. `ATTENTION` = only when something needs a human (a sport with no GC, a blank staffer cell on a game that wants that deliverable, a failed event). `ALWAYS` = every night. `NEVER` = errors only. |
 | `DATA_START_COLUMN` | `B` | **Column letter where the Date block starts** — the column holding the day number. `B` on trackers with a spacer column in A; `A` on trackers without one. Every other column is located relative to it, so this one letter describes the whole layout. Run `testLayout()` after changing it. |
 
 Only these seven keys are read. Values are validated with fallbacks, so a typo (e.g. `DRY_RUN = maybe`) silently reverts to the safe default rather than crashing.
@@ -386,6 +386,7 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 | **⚠️ A whole tab produces nothing, on a sheet you just pointed at** | The column layout probably differs. Run `testLayout()` — if `DAY` shows `"Mon"` instead of a number, set `DATA_START_COLUMN` (§7) to the column letter holding the day number. Reading one column off makes every row forward-fill from a null date, so nothing ever matches and nothing errors. |
 | **Wrong time shown** | The time is formatted in the *spreadsheet's* timezone. If the spreadsheet's timezone setting is wrong, the displayed (and posted) time will be too. |
 | **A staffer shows "no handle on file"** | The name in the Recap/Livetweet cell doesn't match any `Name` in the Staffers tab, or that row's Handle is blank. |
+| **`⚠️ Livetweet: UNASSIGNED` on a game nobody livetweets** | Two columns are named `Livetweet`: the `Yes`/`No` deliverable flag and the staffer names further right. The warning now fires only when the flag says `Yes`, so check the flag — if it reads `No` and you still see the warning, someone is named in the staffer cell. |
 | **Error alert in Telegram** | Open the `_log` tab — the `ERROR` row's Detail column has the message/stack. |
 | **Bot stopped after "working fine"** | Check `_log` for recent `ERROR` rows; check the trigger still exists; check the group didn't become a supergroup. |
 
