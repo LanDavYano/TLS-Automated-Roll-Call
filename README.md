@@ -99,12 +99,13 @@ TLS-Automated-Roll-Call/
 
 ## 5. The spreadsheet
 
-The script is bound to the **Coverage Tracker** Google Sheet. It uses these tabs:
+The script is bound to the **Coverage Tracker** Google Sheet, and by default reads that one. The `SPREADSHEET_ID` script property can point it at **any** tracker instead — that's how one script serves a new season's sheet without being copied (§8.1). Either way it uses these tabs, in whichever spreadsheet it's reading:
 
 ### Month tabs (`September`, `October`, …)
 - Named **exactly** the English month, **no year**. This naming is load-bearing — don't rename them.
 - Data starts at **row 5** (rows 1–4 are headers).
-- Key columns: **B** day, **D** time, **E** event name (`Sport: DLSU vs OPPONENT`), **F** venue, **G** Game day, **H–O** deliverable flags, **Q** Recap staffers, **R** Livetweet staffers.
+- Key columns, **on a tracker whose Date block starts at B** (`DATA_START_COLUMN = B`): **B** day, **C** weekday, **D** time, **E** event name (`Sport: DLSU vs OPPONENT`), **F** venue, **G–O** deliverable flags, **P** photo (ignored), **Q** Recap staffers, **R** Livetweet staffers.
+- Those positions are **relative to the Date block**, not absolute. A tracker without the spacer column in A sets `DATA_START_COLUMN = A` and every column above shifts one to the left — no code change. Run `testLayout()` to see exactly which column each field resolved to. This is what lets one script read trackers built by different editors.
 - **Every row with an event name gets a roll call.** Games, ceremonies, awardings, press conferences, and tournament days (`Fencing Day 1`, `Golf Day 2`) all count. The `Game day` column is **not** used — in the live tracker it reads `No` on most real games.
 - Nothing is silently dropped: an event whose name matches no `Groups` keyword goes to the **admin chat** with a warning, so you see it rather than losing it.
 
@@ -121,7 +122,7 @@ Key/Value pairs the bot reads live on every run. Run `setupConfigTab()` once to 
 `Timestamp | EventKey | Status | Detail`. Statuses: `SENT`, `SKIPPED_DUPLICATE`, `SKIPPED_MODE_CHANGED`, `DRY_RUN`, `ERROR`. One row per **message**, not per sheet row — a session-mode sport logs one entry covering its whole day. This is the idempotency ledger and the error trail — check it first when debugging.
 
 ### Script Properties (NOT a tab)
-Telegram credentials live in **Project Settings → Script Properties**, so they aren't visible to spreadsheet editors:
+These live in **Project Settings → Script Properties** — the credentials because they must not be visible to spreadsheet editors, and `SPREADSHEET_ID` because it decides *which* spreadsheet is read and so can't be stored in one. They are shared across every season:
 
 | Key | Required? | Value |
 |---|---|---|
@@ -129,7 +130,7 @@ Telegram credentials live in **Project Settings → Script Properties**, so they
 | `TELEGRAM_CHAT_ID` | yes | the **admin chat** ID (negative for groups) — where errors, the nightly report, and any unmapped roll call go |
 | `WEB_APP_URL` | for commands | the deployment's `/exec` URL (§9.1) |
 | `WEBHOOK_SECRET` | strongly advised | any random string; keeps strangers from POSTing fake commands to the public `/exec` URL (§9.1) |
-| `SPREADSHEET_ID` | only if needed | the tracker's ID. Set it if commands fail with "No active spreadsheet in this execution context". |
+| `SPREADSHEET_ID` | ⭐ per season | **Which spreadsheet the bot reads.** Paste the tracker's URL (or its ID). Overrides the sheet the script is bound to, in every context — nightly run, commands, editor. Leave it unset to read the bound sheet. See §8.1. |
 | `BOT_USERNAME` | optional | e.g. `SportsRollCall_bot`. Saves a `getMe` call when someone types a `@botname` suffix. Looked up and cached automatically if unset. |
 
 ---
@@ -148,7 +149,9 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 | **Stop a GC receiving roll calls** | In the GC: `/unmap`. Reversible — it sets `Active = FALSE`, it doesn't delete. |
 | **Look further ahead** | Config tab → change `LEAD_DAYS` (1 = tomorrow, 2 = two days out, …). |
 | **Change the send time** | Apps Script editor → **Triggers** (alarm-clock icon) → edit the `main` trigger's time. |
-| **⭐ Start a new season** | Config tab → update `SEASON_NUMBER` and `SEASON_START_YEAR` (and `SEASON_START_MONTH` if the season starts a different month). **This is the annual task — see §8.** |
+| **⭐ Start a new season** | Point the bot at the new season's spreadsheet, then set `SEASON_NUMBER` / `SEASON_START_YEAR` in **its** Config tab. **This is the annual task — see §8.** |
+| **Point the bot at a different spreadsheet** | Script Properties → set `SPREADSHEET_ID` to that sheet's URL. Takes effect on the next run; no code change, no redeploy. Clear it to go back to the bound sheet. See §8.1. |
+| **Check which spreadsheet it's reading** | In any mapped GC: `/whereami`. The `Tracker:` line names the file and says whether it came from `SPREADSHEET_ID` or the bound sheet. |
 | **Merge a sport's daily events into one roll call** | Run `/rollsetup <sport> session` in its GC. Use it for sports where the categories play as one block — Fencing, Athletics, Golf, 3x3, Chess. `/rollsetup <sport> event` undoes it. |
 | **Map a GC covering sports with no shared word** | `/rollsetup esports, valorant, nba2k` — one rule, several keywords. |
 | **Set up a GC before its month tab is filled in** | `/rollsetup <sport> force` — skips the "nothing in the tracker matches" guard. |
@@ -166,8 +169,9 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 | `LEAD_DAYS` | `1` | How many days ahead to look. `1` = announce tomorrow's games tonight. |
 | `SHOW_UNASSIGNED_WARNING` | `TRUE` | `TRUE` = show a ⚠️ UNASSIGNED line when a Recap/Livetweet cell is blank. |
 | `SUMMARY_MODE` | `ATTENTION` | Nightly report to the admin chat. `ATTENTION` = only when something needs a human (a sport with no GC, a blank staffer cell, a failed event). `ALWAYS` = every night. `NEVER` = errors only. |
+| `DATA_START_COLUMN` | `B` | **Column letter where the Date block starts** — the column holding the day number. `B` on trackers with a spacer column in A; `A` on trackers without one. Every other column is located relative to it, so this one letter describes the whole layout. Run `testLayout()` after changing it. |
 
-Only these six keys are read. Values are validated with fallbacks, so a typo (e.g. `DRY_RUN = maybe`) silently reverts to the safe default rather than crashing.
+Only these seven keys are read. Values are validated with fallbacks, so a typo (e.g. `DRY_RUN = maybe`) silently reverts to the safe default rather than crashing.
 
 ### 7.1 The `Groups` tab (per-sport routing)
 
@@ -237,14 +241,40 @@ Notes worth knowing:
 
 ## 8. ⭐ The one annual task
 
-At the start of each UAAP season, open the **Config** tab and set:
+Each new season usually means a **new tracker spreadsheet**. Two steps: point the bot at it (§8.1), then set the season values in **that** spreadsheet's Config tab:
 
-- `SEASON_NUMBER` → the UAAP season number (e.g. `88`). Printed in every roll call's title line.
 - `SEASON_NUMBER` → the UAAP season number (e.g. `88`). Printed in every roll call's title line.
 - `SEASON_START_YEAR` → the year the season's first month falls in (e.g. `2025` for a season opening September 2025).
 - `SEASON_START_MONTH` → only if the opening month changes.
 
 **Why it matters:** the month tabs carry no year (`September`, not `September 2025`), so this is the only place the year comes from. With `SEASON_START_YEAR=2025, SEASON_START_MONTH=9`: Sep–Dec → 2025, Jan–May → 2026. Forget this and the bot computes the wrong dates and posts nothing.
+
+If the season reuses the same spreadsheet, skip §8.1 — the Config edits above are the whole task.
+
+### 8.1 Pointing the bot at a new spreadsheet
+
+**Do not copy the script.** One Apps Script project serves every season; only the property below changes.
+
+1. Script Properties (**⚙️ Project Settings → Script Properties**) → set **`SPREADSHEET_ID`** to the new tracker's URL. Pasting the whole address bar is fine — the ID is extracted from it.
+2. In the Apps Script editor, run **`setupConfigTab()`** and **`setupGroupsTab()`**. They create the tabs in the newly pointed-at sheet and never overwrite existing values, so re-running is safe.
+3. Check the layout: run **`testLayout()`** and read the log. If `DAY` shows a weekday name instead of a number, or `EVENT` shows the venue, set **`DATA_START_COLUMN`** in that sheet's Config tab to the column letter holding the day number and run it again.
+4. Fill in the **Staffers** tab and set the season values (§8 above).
+5. Re-map the GCs with **`/rollsetup`** in each one. Group mappings live in the `Groups` tab, so a new spreadsheet starts with none — `/groups` lists what's still missing.
+6. Confirm with **`/whereami`** in any GC: the `Tracker:` line should name the new sheet.
+
+**Why not copy the whole thing:** copying the spreadsheet copies the script too, but not its Script Properties and not its triggers, and each copy needs its own deployment. Worse, **a bot token can hold only one webhook** (§9.1) — the second copy's `setupWebhook()` silently steals commands from the first. One script, one deployment, one property to change.
+
+**Things worth knowing:**
+
+- `Config`, `Staffers`, `Groups` and `_log` are tabs **inside whichever spreadsheet is being read**, so pointing elsewhere swaps all of them at once — including `DRY_RUN`. Check the new sheet's `DRY_RUN` before expecting a live send.
+- The **nightly trigger follows the property.** Left pointing at an old sheet, the 7 PM run reads the wrong tabs, finds nothing for tomorrow, and posts nothing — silently. `/whereami` is the check.
+- Only Telegram credentials stay put: the token, admin chat, and webhook secret are Script Properties, shared across every season.
+
+### 8.2 Demoing on a past season's sheet
+
+Same mechanism, temporarily. Set `SPREADSHEET_ID` to the old sheet, add a demo row to the right month tab, then run **`testSend('YYYY-MM-DD')`** from the editor with that row's date — it runs the real send path for an explicit date, so you don't have to wait for the calendar to reach "tomorrow" or touch the trigger.
+
+Run it once with `DRY_RUN=TRUE` to read the exact message in the log, then set `DRY_RUN=FALSE` to post it for real. **Clear `SPREADSHEET_ID` when you're done** — see the trigger warning above. The old sheet gets its own `_log`, so a demo can never mark this season's roll calls as already sent.
 
 ---
 
@@ -349,8 +379,11 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 | **Another bot of ours broke when I set this up** | One token = one webhook. If both scripts share a bot token, they fight over it. Check `checkWebhook()`'s bot username; give each script its own bot. |
 | **`/rollsetup` says it can't tell which sport this GC is** | The group's name has no word matching a sport in the tracker. Run `/rollsetup <sport>` with a keyword from the list it printed. |
 | **`/rollsetup` says nothing in the tracker matches** | Either the keyword is wrong or `SEASON_START_YEAR` is stale, making every game resolve to the wrong year. Check §8. |
-| **Commands error with "No active spreadsheet"** | Set the `SPREADSHEET_ID` script property to the tracker's ID (§5). |
+| **Commands error with "No active spreadsheet"** | Set the `SPREADSHEET_ID` script property to the tracker's URL (§8.1). |
+| **⚠️ The bot posts nothing, and `_log` shows no new rows at all** | It may be reading the wrong spreadsheet. Run `/whereami` and check the `Tracker:` line — a `SPREADSHEET_ID` left over from a demo (§8.2) points the nightly run at an old sheet, where there are no games for tomorrow. Clear the property. |
+| **Error: "SPREADSHEET_ID is set to … but that spreadsheet could not be opened"** | The link is wrong, or the Google account running the script has no access to that sheet. Fix the property or share the sheet with that account; clearing the property falls back to the bound sheet. |
 | **A game is skipped unexpectedly** | Its event name has no `DLSU vs X` opponent, or it already shows `SENT` in `_log` (run `resetLog` to re-send). |
+| **⚠️ A whole tab produces nothing, on a sheet you just pointed at** | The column layout probably differs. Run `testLayout()` — if `DAY` shows `"Mon"` instead of a number, set `DATA_START_COLUMN` (§7) to the column letter holding the day number. Reading one column off makes every row forward-fill from a null date, so nothing ever matches and nothing errors. |
 | **Wrong time shown** | The time is formatted in the *spreadsheet's* timezone. If the spreadsheet's timezone setting is wrong, the displayed (and posted) time will be too. |
 | **A staffer shows "no handle on file"** | The name in the Recap/Livetweet cell doesn't match any `Name` in the Staffers tab, or that row's Handle is blank. |
 | **Error alert in Telegram** | Open the `_log` tab — the `ERROR` row's Detail column has the message/stack. |

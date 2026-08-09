@@ -7,28 +7,56 @@
  * Row arrays are 0-indexed matching column letters: A=0, B=1, ... R=17.
  */
 
-const COL = {
-  DAY: 1,        // B
-  WEEKDAY: 2,    // C — informational only, never trusted (§2.1)
-  TIME: 3,       // D
-  EVENT: 4,      // E
-  VENUE: 5,      // F
-  H: 7, I: 8, J: 9, K: 10, L: 11, M: 12, N: 13, O: 14, // deliverable flags
-  RECAP: 16,     // Q
-  LIVETWEET: 17, // R
+/**
+ * Column positions, expressed RELATIVE to the column the Date block starts in.
+ *
+ * Relative because the trackers genuinely differ. The current sheet keeps a
+ * narrow decorative strip in column A and starts its Date block at B; earlier
+ * seasons' sheets have no strip and start at A. From the Date block rightward
+ * the two are identical, so a single offset describes the whole difference —
+ * which is what makes one script able to read both. The offset is per
+ * spreadsheet, set as DATA_START_COLUMN in that sheet's Config tab (§2.4).
+ *
+ * Offset 14 (column P on the current sheet) is deliberately absent: it holds
+ * the photo assignment, which no roll call mentions.
+ */
+const LAYOUT = {
+  DAY: 0,                 // first column of the Date block
+  WEEKDAY: 1,             // informational only, never trusted (§2.1)
+  TIME: 2,
+  EVENT: 3,
+  VENUE: 4,
+  DELIVERABLES_START: 5,  // nine columns, in DELIVERABLE_LABELS order
+  RECAP: 15,
+  LIVETWEET: 16,
 };
 
-const DELIVERABLE_LABELS = {
-  6: 'Game Day',
-  7: 'HN',
-  8: 'Livetweet',
-  9: 'HT',
-  10: 'Buzzer',
-  11: 'POTG',
-  12: 'Album Caption',
-  13: 'Recap',
-  14: 'IGs',
-};
+/**
+ * §3.7 — the nine deliverable columns, in sheet order starting at
+ * DELIVERABLES_START. Order is load-bearing twice over: it maps each column to
+ * its label here, and it's the order the labels are re-emitted in when a group's
+ * deliverables are unioned for rendering (Template.js).
+ */
+const DELIVERABLE_LABELS = [
+  'Game Day', 'HN', 'Livetweet', 'HT', 'Buzzer', 'POTG', 'Album Caption', 'Recap', 'IGs',
+];
+
+/**
+ * LAYOUT resolved to absolute 0-indexed columns for one spreadsheet's Config.
+ *
+ * Defaults to a Date block at column B — the shape of every tracker built for
+ * this bot so far — so a Config tab with no DATA_START_COLUMN row behaves
+ * exactly as it always has.
+ */
+function columnsFor_(config) {
+  const base = config && typeof config.DATA_START_COLUMN === 'number'
+    ? config.DATA_START_COLUMN
+    : 1;
+
+  const cols = {};
+  Object.keys(LAYOUT).forEach((key) => { cols[key] = base + LAYOUT[key]; });
+  return cols;
+}
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -238,12 +266,12 @@ function parseTime_(raw, tz) {
   return String(raw || '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** §3.7 — columns G-O marked "Yes", mapped to display labels, in column order. */
-function getDeliverables_(row) {
+/** §3.7 — the nine deliverable columns marked "Yes", as display labels, in column order. */
+function getDeliverables_(row, cols) {
   const labels = [];
-  [6, 7, 8, 9, 10, 11, 12, 13, 14].forEach((colIndex) => {
-    const val = String(row[colIndex] || '').trim().toLowerCase();
-    if (val === 'yes') labels.push(DELIVERABLE_LABELS[colIndex]);
+  DELIVERABLE_LABELS.forEach((label, i) => {
+    const val = String(row[cols.DELIVERABLES_START + i] || '').trim().toLowerCase();
+    if (val === 'yes') labels.push(label);
   });
   return labels;
 }
@@ -265,21 +293,22 @@ function parseStafferNames_(raw) {
 function resolveRows_(rows, monthName, config) {
   const monthNumber = monthNumberFromName_(monthName);
   const year = resolveYear_(monthNumber, config);
+  const cols = columnsFor_(config);
   let lastDay = null;
   let lastVenue = '';
   let lastTime = '';
 
   return rows.map((row, i) => {
-    const day = resolveDayOfMonth_(row[COL.DAY], lastDay);
+    const day = resolveDayOfMonth_(row[cols.DAY], lastDay);
     const dayChanged = day !== lastDay;
     if (day !== null && day !== undefined) lastDay = day;
 
-    const venue = resolveVenue_(row[COL.VENUE], lastVenue);
+    const venue = resolveVenue_(row[cols.VENUE], lastVenue);
     lastVenue = venue;
 
     // Merged time cells only ever span rows within one day's block, so the fill
     // is dropped at every day boundary rather than leaking across dates.
-    const time = resolveTime_(row[COL.TIME], dayChanged ? '' : lastTime);
+    const time = resolveTime_(row[cols.TIME], dayChanged ? '' : lastTime);
     lastTime = time;
 
     return {
@@ -328,8 +357,10 @@ function isAnnounceableName_(parsedName) {
  * cells are formatted without the 1899-epoch skew (see parseTime_).
  */
 function parseMonthEvents(rows, monthName, config, tz) {
+  const cols = columnsFor_(config);
+
   return resolveRows_(rows, monthName, config)
-    .map((r) => Object.assign({ name: parseEventName_(r.row[COL.EVENT]) }, r))
+    .map((r) => Object.assign({ name: parseEventName_(r.row[cols.EVENT]) }, r))
     .filter((r) => isAnnounceableName_(r.name))
     .map((r) => ({
       year: r.year,
@@ -345,9 +376,9 @@ function parseMonthEvents(rows, monthName, config, tz) {
       rawName: r.name.raw,
       venue: r.venue,
       time: parseTime_(r.time, tz),
-      deliverables: getDeliverables_(r.row),
-      recapNames: parseStafferNames_(r.row[COL.RECAP]),
-      livetweetNames: parseStafferNames_(r.row[COL.LIVETWEET]),
+      deliverables: getDeliverables_(r.row, cols),
+      recapNames: parseStafferNames_(r.row[cols.RECAP]),
+      livetweetNames: parseStafferNames_(r.row[cols.LIVETWEET]),
       sheetRow: r.sheetRow,
     }));
 }

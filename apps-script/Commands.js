@@ -381,6 +381,9 @@ function handleWhereami_(ctx) {
   lines.push(
     '',
     'Bot status',
+    // First, because every other line below is read out of this file — if it is
+    // the wrong one, nothing else in this block means what it appears to mean.
+    `Tracker: ${describeActiveSpreadsheet_()}`,
     `DRY_RUN: ${config.DRY_RUN ? 'TRUE — nightly sends are paused' : 'FALSE — live'}`,
     `Season: ${config.SEASON_START_YEAR}, starting month ${config.SEASON_START_MONTH}`,
     `Lead days: ${config.LEAD_DAYS} (roll calls go out the night before)`,

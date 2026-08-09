@@ -123,9 +123,7 @@ function unionDeliverables_(events) {
   const seen = {};
   events.forEach((e) => (e.deliverables || []).forEach((d) => { seen[d] = true; }));
 
-  return Object.keys(DELIVERABLE_LABELS)
-    .map((key) => DELIVERABLE_LABELS[key])
-    .filter((label) => seen[label]);
+  return DELIVERABLE_LABELS.filter((label) => seen[label]);
 }
 
 /** Union of a staffer column across the group, deduplicated, order preserved. */

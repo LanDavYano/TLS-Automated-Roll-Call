@@ -48,6 +48,7 @@ const {
   parseEventName_, sportFamily_, eventCategory_, resolveTarget_, normalizeMode_,
   normalizeForMatch_, splitKeywords_, sportMatchesKeyword_, groupEventsForSending_,
   renderDigest_, collapseTimes_, buildGroupKey_, findPriorSend_,
+  parseMonthEvents, columnsFor_,
 } = context;
 
 let failures = 0;
@@ -296,6 +297,68 @@ check('event → session is also recognised',
 // An untouched sport must still report a clean "not sent".
 Object.keys(SENT).forEach((k) => delete SENT[k]);
 check('nothing sent → null', findPriorSend_(sessionGroup), null);
+
+// ---------------------------------------------------------------------
+// Sheet layout — the same games, typed into two differently-shaped trackers
+// ---------------------------------------------------------------------
+//
+// The current tracker keeps a decorative column in A and starts its Date block
+// at B; earlier seasons' sheets start at A. Both must parse to byte-identical
+// events, because a wrong offset does not throw — it reads the weekday column
+// as the day number, forward-fills every row from a null, and posts nothing at
+// all. Exactly the silent shape this suite exists to catch.
+
+section('Sheet layout — a one-column shift must not change the parsed result');
+
+const LAYOUT_CONFIG = { SEASON_START_YEAR: 2025, SEASON_START_MONTH: 9, DATA_START_COLUMN: 1 };
+
+/** One row of the September tab, in the "Date block starts at A" shape. */
+const ROWS_AT_A = [
+  [10, 'Mon', '1:30 PM', 'Esports Mobile Legends: Bang Bang!: DLSU v NU', 'MVP Studios',
+   'No', 'Yes', 'No', 'No', 'Yes', 'No', 'Yes', 'Yes', 'No', '', 'Lance', 'Wyn'],
+  [11, 'Tue', '4:30 PM', 'VALORANT: DLSU v UST', 'MVP Studios',
+   'No', 'Yes', 'No', 'No', 'Yes', 'No', 'Yes', 'Yes', 'No', '', 'Lance, Mika', ''],
+];
+
+/** The identical rows in the current tracker's shape: one spacer column in A. */
+const ROWS_AT_B = ROWS_AT_A.map((row) => [''].concat(row));
+
+const parsedAtB = parseMonthEvents(ROWS_AT_B, 'September', LAYOUT_CONFIG, null);
+const parsedAtA = parseMonthEvents(
+  ROWS_AT_A, 'September', Object.assign({}, LAYOUT_CONFIG, { DATA_START_COLUMN: 0 }), null
+);
+
+check('column letters resolve (B → Date at index 1, Event at 4, Livetweet at 17)',
+  [columnsFor_(LAYOUT_CONFIG).DAY, columnsFor_(LAYOUT_CONFIG).EVENT, columnsFor_(LAYOUT_CONFIG).LIVETWEET],
+  [1, 4, 17]);
+check('...and shift wholesale when the Date block starts at A',
+  [columnsFor_({ DATA_START_COLUMN: 0 }).DAY, columnsFor_({ DATA_START_COLUMN: 0 }).EVENT,
+   columnsFor_({ DATA_START_COLUMN: 0 }).LIVETWEET],
+  [0, 3, 16]);
+check('a Config with no DATA_START_COLUMN keeps the existing layout',
+  columnsFor_({}).DAY, 1);
+
+check('both layouts parse the same number of events', [parsedAtB.length, parsedAtA.length], [2, 2]);
+check('both layouts produce identical events', parsedAtA, parsedAtB);
+
+check('day number is read, not the weekday', [parsedAtB[0].day, parsedAtB[1].day], [10, 11]);
+check('event name is read from the right column, colon-in-title intact',
+  [parsedAtB[0].family, parsedAtB[0].opponent], ['Esports Mobile Legends: Bang Bang!', 'NU']);
+check('the two titles stay separate families', parsedAtB[1].family, 'VALORANT');
+check('venue is read from the correct column', parsedAtB[0].venue, 'MVP Studios');
+check('deliverables map to their labels, in column order',
+  parsedAtB[0].deliverables, ['HN', 'Buzzer', 'Album Caption', 'Recap']);
+check('the photo column between IGs and Recap is skipped',
+  [parsedAtB[0].recapNames, parsedAtB[0].livetweetNames], [['Lance'], ['Wyn']]);
+check('comma-separated staffers still split', parsedAtA[1].recapNames, ['Lance', 'Mika']);
+
+// The failure this guards: reading one column left of the real Date block means
+// day resolves off the weekday text, which is not a number and never will be.
+const parsedWrong = parseMonthEvents(
+  ROWS_AT_B, 'September', Object.assign({}, LAYOUT_CONFIG, { DATA_START_COLUMN: 0 }), null
+);
+check('a wrong offset yields no usable date rather than a plausible wrong one',
+  parsedWrong.every((e) => e.day === null), true);
 
 // ---------------------------------------------------------------------
 

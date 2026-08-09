@@ -50,29 +50,35 @@ Two additional tabs are added by this project: `Staffers` and `Config`. A third,
 
 Rows 1–4 are headers. Data begins at **row 5**.
 
-| Col | Contents | Notes |
-|---|---|---|
-| A | (unused) | |
-| B | Day of month | **Mixed types** — see §3.1 |
-| C | Weekday abbreviation | `Fri`, `Mon`, ... Informational only; do not trust it, derive weekday from the resolved date |
-| D | Time | Usually a Date/time value, sometimes free text |
-| E | Event name | `R1 Men's Football: \nDLSU vs UE` — contains newlines |
-| F | Venue | May be merged across rows |
-| G | `Game day` | `Yes`/`No` — **not used for filtering**, see §3.3 |
-| H | `HN` | Deliverable flag |
-| I | `Livetweet` | Deliverable flag |
-| J | `HT` | Deliverable flag |
-| K | `Buzzer` | Deliverable flag |
-| L | `POTG` | Deliverable flag |
-| M | `Album` | Deliverable flag |
-| N | `Recap Article` | Deliverable flag |
-| O | `IGs` | Deliverable flag |
-| P | Photo staffers | **Ignore** |
-| Q | **Sports — Recap staffers** | Comma-separated names. **Used.** |
-| R | **Sports — Livetweet staffers** | Comma-separated names. **Used.** |
-| S–V | Web / Layout / Execs | **Ignore** |
+Column letters below describe a tracker whose **Date block starts at column B** — the shape of the current Coverage Tracker, where A is a narrow decorative strip. Trackers built by earlier editors have no such strip and start the Date block at A, shifting every column below one to the left.
 
-Only **Q and R** are read for staffer assignment. Columns P and S–V exist in the sheet but are out of scope.
+The parser therefore stores positions **relative to the Date block** (`LAYOUT` in Parser.js) and resolves them against `DATA_START_COLUMN`, a per-spreadsheet Config key holding that block's column letter (§2.4). One letter describes the entire layout, which is what allows a single script project to read trackers of both shapes — see §13. `columnsFor_(config)` performs the resolution; `testLayout()` prints the result against real rows.
+
+| Col | Offset | Contents | Notes |
+|---|---|---|---|
+| A | — | (unused) | The strip this layout is named for; absent on older trackers |
+| B | +0 | Day of month | **Mixed types** — see §3.1 |
+| C | +1 | Weekday abbreviation | `Fri`, `Mon`, ... Informational only; do not trust it, derive weekday from the resolved date |
+| D | +2 | Time | Usually a Date/time value, sometimes free text |
+| E | +3 | Event name | `R1 Men's Football: \nDLSU vs UE` — contains newlines |
+| F | +4 | Venue | May be merged across rows |
+| G | +5 | `Game day` | `Yes`/`No` — **not used for filtering**, see §3.3 |
+| H | +6 | `HN` | Deliverable flag |
+| I | +7 | `Livetweet` | Deliverable flag |
+| J | +8 | `HT` | Deliverable flag |
+| K | +9 | `Buzzer` | Deliverable flag |
+| L | +10 | `POTG` | Deliverable flag |
+| M | +11 | `Album` | Deliverable flag |
+| N | +12 | `Recap Article` | Deliverable flag |
+| O | +13 | `IGs` | Deliverable flag |
+| P | +14 | Photo staffers | **Ignore** |
+| Q | +15 | **Sports — Recap staffers** | Comma-separated names. **Used.** |
+| R | +16 | **Sports — Livetweet staffers** | Comma-separated names. **Used.** |
+| S–V | +17… | Web / Layout / Execs | **Ignore** |
+
+Only the **Recap and Livetweet** columns (+15, +16) are read for staffer assignment. The photo column at +14 and everything past +16 exist in the sheet but are out of scope.
+
+**A wrong `DATA_START_COLUMN` fails silently, not loudly.** Reading one column left of the real Date block puts the weekday abbreviation where the day number should be; `resolveDayOfMonth_` accepts neither a `Date` nor a number there, so every row forward-fills — from `null`, since there is no prior row. No event ever matches a target date, nothing throws, and nothing is logged. `testLayout()` exists to make that state visible in one run, and the layout suite in `tests/parser.test.js` asserts that both shapes parse to identical events.
 
 ### 2.2 Header merge structure (for reference)
 
@@ -103,8 +109,9 @@ Key–value pairs, header in row 1.
 | `LEAD_DAYS` | `1` | Days ahead to look (1 = tomorrow) |
 | `SHOW_UNASSIGNED_WARNING` | `TRUE` | Emit ⚠️ line for empty Q or R |
 | `SUMMARY_MODE` | `ATTENTION` | Post-run report to the admin chat — see §6.1 |
+| `DATA_START_COLUMN` | `B` | Column letter the Date block starts at, resolving every other column position (§2.1). Held per spreadsheet because it is a property of *that* tracker's shape |
 
-Telegram credentials live in **Script Properties**, not here — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, plus `WEB_APP_URL` and `WEBHOOK_SECRET` for the command layer (§12.5).
+Telegram credentials live in **Script Properties**, not here — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, plus `WEB_APP_URL` and `WEBHOOK_SECRET` for the command layer (§12.5). `SPREADSHEET_ID` lives there too, for the same reason inverted: it selects *which* spreadsheet's Config tab is read, so it cannot live in one (§12.7).
 
 Config values must be read with sensible fallback defaults so a missing row does not crash the script.
 
@@ -129,9 +136,10 @@ Empty cells occur because **date cells are merged across multi-event days**. `ge
 Implementation:
 
 ```js
+const cols = columnsFor_(config);   // §2.1 — DATA_START_COLUMN resolved
 let lastDay = null;
 for (const row of rows) {
-  const raw = row[COL.DATE];
+  const raw = row[cols.DAY];
   let day = null;
   if (raw instanceof Date) day = raw.getDate();
   else if (typeof raw === 'number' && raw > 0) day = raw;
@@ -141,7 +149,7 @@ for (const row of rows) {
 }
 ```
 
-**Venue (column F) is also merged** in at least one case (`F14:F15`). Forward-fill venue the same way. Do **not** forward-fill Q or R — see §3.5.
+**Venue (offset +4, column F) is also merged** in at least one case (`F14:F15`). Forward-fill venue the same way. Do **not** forward-fill the staffer columns (+15, +16) — see §3.5.
 
 ### 3.2 Year resolution
 
@@ -603,4 +611,8 @@ Adding the bot to a group fires a `my_chat_member` update; the bot replies with 
 - **Always edit the existing deployment.** A new deployment mints a new `/exec` URL, and Telegram keeps POSTing to the dead one. Deploy → Manage deployments → ✏️ → New version.
 - **`getUpdates` and a webhook are mutually exclusive** — with the webhook live, `harvestChatIds()` returns 409.
 - **The `/exec` URL is public.** Apps Script cannot read request headers, so Telegram's `secret_token` header is unusable; the secret rides in the query string instead (`WEBHOOK_SECRET`, checked by `webhookSecretOk_`). Unset, the endpoint accepts anything that finds it.
-- **`SPREADSHEET_ID`** is an optional Script Property. A webhook request is a different execution context than an editor run or a trigger, and `getActiveSpreadsheet()` is only guaranteed for the bound ones; `getSpreadsheet_()` falls back to `openById` when it's set.
+- **`SPREADSHEET_ID`** is an optional Script Property naming the spreadsheet to read — a URL or a bare id (`extractSpreadsheetId_` takes the id out of a pasted link). When set it **takes precedence** over the bound container in every execution context; `getSpreadsheet_()` resolves it via `openById` and caches the result for the execution. Unset, the bound container is used.
+
+  The precedence is what makes one script project serve successive seasons' trackers, and a past season's for a demo, without being copied — copying is blocked in practice by the one-webhook-per-token rule above. It also subsumes the original purpose of the property: a webhook request is a different execution context than an editor run or a trigger, and `getActiveSpreadsheet()` is only guaranteed for the bound ones.
+
+  Because `Config`, `Staffers`, `Groups` and `_log` are all tabs of the resolved spreadsheet, the property swaps the bot's entire state — including `DRY_RUN` and the idempotency ledger — as one atomic switch. A stale value therefore fails *silently*: the nightly run reads a sheet with no games for tomorrow and posts nothing. `/whereami` reports the resolved spreadsheet by name for exactly this reason.

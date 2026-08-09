@@ -208,6 +208,41 @@ function testRead() {
   });
 }
 
+/**
+ * Step 1b: what the resolved columns actually contain.
+ *
+ * The check to run after changing DATA_START_COLUMN, and the first thing to run
+ * when pointing the bot at a tracker whose layout you haven't verified. A wrong
+ * offset is unmistakable here — DAY comes back as a weekday name, or EVENT lands
+ * on the venue — where in the nightly run it would only ever show up as silence.
+ */
+function testLayout(monthName) {
+  monthName = monthName || TEST_MONTH;
+  const config = getConfig();
+  const cols = columnsFor_(config);
+  const last = cols.DELIVERABLES_START + DELIVERABLE_LABELS.length - 1;
+
+  Logger.log(
+    `DATA_START_COLUMN = ${columnLetter_(config.DATA_START_COLUMN)} — reading "${monthName}" ` +
+    `with the Date block at ${columnLetter_(cols.DAY)}, deliverables ` +
+    `${columnLetter_(cols.DELIVERABLES_START)}-${columnLetter_(last)}.`
+  );
+
+  const rows = readMonthRows_(monthName).slice(0, 3);
+  if (!rows.length) {
+    Logger.log(`No data rows at or after row ${FIRST_DATA_ROW} — check the tab name and that data starts at row ${FIRST_DATA_ROW}.`);
+    return;
+  }
+
+  rows.forEach((row, i) => {
+    Logger.log(`--- ${monthName} row ${FIRST_DATA_ROW + i} ---`);
+    ['DAY', 'WEEKDAY', 'TIME', 'EVENT', 'VENUE', 'RECAP', 'LIVETWEET'].forEach((field) => {
+      Logger.log(`  ${field.padEnd(9)} ${columnLetter_(cols[field])}: ${JSON.stringify(row[cols[field]])}`);
+    });
+    Logger.log(`  ${'DELIVER'.padEnd(9)} ${columnLetter_(cols.DELIVERABLES_START)}-${columnLetter_(last)}: ${JSON.stringify(getDeliverables_(row, cols))}`);
+  });
+}
+
 /** Step 2: log parsed Config object and Staffers name->handle map. */
 function testConfigAndStaffers() {
   const config = getConfig();
@@ -250,9 +285,10 @@ function testEventFilter(dateString) {
  * Basketball vs 3x3 Basketball, Chess vs Blitz Chess — must differ.
  */
 function testEventNameParser() {
+  const cols = columnsFor_(getConfig());
   const rows = readMonthRows_(TEST_MONTH);
   rows.forEach((row, i) => {
-    const p = parseEventName_(row[COL.EVENT]);
+    const p = parseEventName_(row[cols.EVENT]);
     Logger.log(
       `Row ${FIRST_DATA_ROW + i}: family="${p.family}" category="${p.category}" ` +
       `opponent="${p.hasOpponent ? p.opponent : '(none)'}" detail="${p.detail}"`

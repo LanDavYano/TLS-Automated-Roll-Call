@@ -11,6 +11,10 @@ const CONFIG_DEFAULTS = {
   LEAD_DAYS: 1,
   SHOW_UNASSIGNED_WARNING: true,
   SUMMARY_MODE: 'ATTENTION',
+  // 0-indexed, so 1 = column B: the Date block's position on every tracker
+  // built for this bot so far. A sheet without the decorative column A sets
+  // DATA_START_COLUMN to A. See LAYOUT in Parser.js.
+  DATA_START_COLUMN: 1,
 };
 
 /** Recognised SUMMARY_MODE values (§6.1). Anything else falls back to ATTENTION. */
@@ -29,6 +33,7 @@ const CONFIG_KEY_META = [
   ['LEAD_DAYS', 1, 'How many days ahead to look. 1 = announce tomorrow\'s games in tonight\'s run.'],
   ['SHOW_UNASSIGNED_WARNING', 'TRUE', 'TRUE = show a "UNASSIGNED" warning line when the Recap or Livetweet staffer cell is blank.'],
   ['SUMMARY_MODE', 'ATTENTION', 'Nightly report to the admin chat. ATTENTION = only when something needs a human (unmapped sport, unassigned staffer, error). ALWAYS = every night. NEVER = errors only.'],
+  ['DATA_START_COLUMN', 'B', 'Column letter where the Date block starts on the month tabs — the column holding the day number. B on trackers with a narrow spacer column in A; A on trackers without one. Everything else (Event, Venue, deliverables, staffers) is found relative to it, so this one letter describes the whole layout. Run testLayout() after changing it.'],
 ];
 
 /**
@@ -36,9 +41,14 @@ const CONFIG_KEY_META = [
  * description column for a successor. Creates the tab if missing and only
  * ADDS keys that aren't already present — existing values (e.g. a DRY_RUN
  * you've already set) are never overwritten. Safe to re-run.
+ *
+ * Goes through getSpreadsheet_() like every other tab access, so that setting
+ * up a newly pointed-at tracker writes into THAT spreadsheet. Reaching for the
+ * container directly would seed the Config tab of the sheet the script happens
+ * to be bound to — the one place the difference is silent and wrong.
  */
 function setupConfigTab() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   let sheet = ss.getSheetByName('Config');
   if (!sheet) sheet = ss.insertSheet('Config');
 
@@ -91,7 +101,43 @@ function getConfig() {
     LEAD_DAYS: toInt_(raw.LEAD_DAYS, CONFIG_DEFAULTS.LEAD_DAYS),
     SHOW_UNASSIGNED_WARNING: toBool_(raw.SHOW_UNASSIGNED_WARNING, CONFIG_DEFAULTS.SHOW_UNASSIGNED_WARNING),
     SUMMARY_MODE: toEnum_(raw.SUMMARY_MODE, SUMMARY_MODES, CONFIG_DEFAULTS.SUMMARY_MODE),
+    DATA_START_COLUMN: toColumnIndex_(raw.DATA_START_COLUMN, CONFIG_DEFAULTS.DATA_START_COLUMN),
   };
+}
+
+/**
+ * A column letter from the Config tab ("B") as a 0-indexed column number.
+ *
+ * A letter, not a number, because the person setting this is looking at the
+ * column headers in their own spreadsheet — "the day number is in column B" is
+ * a fact they can read off the screen, where "1" would ask them to know the
+ * indexing is zero-based. A bare number is still accepted and read the way a
+ * spreadsheet numbers columns (1 = A), since that's the other thing someone
+ * might reasonably type.
+ */
+function toColumnIndex_(value, fallback) {
+  const s = String(value == null ? '' : value).trim().toUpperCase();
+  if (s === '') return fallback;
+
+  if (/^[A-Z]+$/.test(s)) {
+    let n = 0;
+    for (let i = 0; i < s.length; i++) n = n * 26 + (s.charCodeAt(i) - 64);
+    return n - 1;
+  }
+
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) || n < 1 ? fallback : n - 1;
+}
+
+/** Inverse of toColumnIndex_: 1 → "B". Used by the diagnostics that name a column. */
+function columnLetter_(index) {
+  let n = Number(index) + 1;
+  let letters = '';
+  while (n > 0) {
+    letters = String.fromCharCode(65 + ((n - 1) % 26)) + letters;
+    n = Math.floor((n - 1) / 26);
+  }
+  return letters || '?';
 }
 
 /** Uppercased match against an allowed list; a typo falls back rather than crashing. */
