@@ -14,6 +14,7 @@
 const CMD = {
   SETUP: '/rollsetup',
   ROLLCALL: '/rollcall',
+  SCAN: '/scan',
   NEXT: '/next',
   WHEREAMI: '/rollwhere',
   GROUPS: '/groups',
@@ -138,6 +139,8 @@ function handleUpdate_(update) {
       return runCommand_(ctx, handleSetup_);
     case CMD.ROLLCALL:
       return runCommand_(ctx, handleRollcall_);
+    case CMD.SCAN:
+      return runCommand_(ctx, handleScan_);
     case CMD.NEXT:
       return runCommand_(ctx, handleNext_);
     case CMD.WHEREAMI:
@@ -400,6 +403,7 @@ function publishCommandMenu() {
     commands: [
       { command: 'rollsetup', description: 'Map this topic as the sport’s Roll Call thread (admins)' },
       { command: 'rollcall', description: 'Post the next roll call for this GC now (admins)' },
+      { command: 'scan', description: 'Re-read the tracker now and post anything the 7 PM run missed (admins)' },
       { command: 'next', description: 'Preview the next game and its roll call — posts nothing' },
       { command: 'rollwhere', description: 'IDs, mapping, and bot status for this topic' },
       { command: 'groups', description: 'Every mapping, plus sports with no GC yet' },

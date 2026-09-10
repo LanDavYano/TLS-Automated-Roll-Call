@@ -282,16 +282,227 @@ function handleRollcall_(ctx) {
  * and family, which a single event object can't know on its own.
  */
 function buildGroupForEvent_(event, config) {
-  const monthName = MONTH_NAMES[event.month - 1];
-  const events = parseMonthEvents(
-    readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_()
+  const groups = groupsForTargetDate_(
+    { year: event.year, month: event.month, day: event.day }, config
   );
-  const sameDay = filterEventsForDate_(events, {
-    year: event.year, month: event.month, day: event.day,
-  });
-
-  const groups = groupEventsForSending_(sameDay, getGroupMap(), getAdminChatId_());
   return groups.find((g) => g.events.some((e) => e.sheetRow === event.sheetRow)) || null;
+}
+
+// ---------------------------------------------------------------------
+// /scan — re-read the tracker now and post whatever is still missing
+// ---------------------------------------------------------------------
+
+/**
+ * The catch-up command, for the night the schedule lands after the 7 PM run.
+ *
+ * Nothing about the tracker is cached — every command reads the tabs live — so
+ * what makes a late edit *look* ignored is the ledger and the shape of the other
+ * commands, not stale data. The nightly run has already been and gone, and
+ * /rollcall only ever offers the *next* upcoming event, which after a run is
+ * normally one already marked SENT: it refuses, and the rows typed in since stay
+ * unreachable from chat until tomorrow night — by which time the game has been
+ * played.
+ *
+ * /scan re-runs the nightly pass over the same target date, now, against the
+ * sheet as it currently stands. The ledger (§5) does the rest: whatever the 7 PM
+ * run already sent is skipped, whatever was added afterwards goes out. Running it
+ * twice is therefore harmless, which is the property that makes it safe to reach
+ * for whenever you are unsure — including "did my edit save?".
+ *
+ *   /scan            this GC's sports, for the date tonight's run covers
+ *   /scan <sport>    another GC's sports (handy from the admin chat)
+ *   /scan all        every sport in the tracker — the whole nightly pass
+ *   /scan today      today's games instead, for a schedule that lands on game day
+ *   /scan dry        list what it would post; sends nothing, logs nothing
+ *
+ * Deliberately has no `force`. Re-posting is a per-message decision (`/rollcall
+ * force`), and a forced scan would re-announce an entire day to every GC at once
+ * — the exact failure the ledger exists to prevent, wearing a convenience label.
+ */
+function handleScan_(ctx) {
+  if (!requireAdmin_(ctx, '/scan')) return;
+
+  const parsed = splitScanArgs_(ctx.args);
+  const config = getConfig();
+
+  // `all` is the only route to sports this chat isn't mapped to. Without it a
+  // scan is confined to what this GC owns, so a Football admin can't fire
+  // Basketball's roll calls by mistyping a keyword.
+  const scope = parsed.all ? null : resolveCommandScope_(ctx, parsed.keyword);
+  if (!parsed.all && !scope) return; // resolveCommandScope_ has already replied
+
+  const targetDate = parsed.today ? todayInManila_() : computeTargetDate_(config);
+
+  // Sends are serialised, because the check-then-append on `_log` is not atomic
+  // and a scan fires a whole day's messages rather than one. An operator who
+  // thinks the first /scan hung and types it again is the realistic collision,
+  // and the cost of losing it is duplicate roll calls across every GC at once.
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+  } catch (err) {
+    sendReply_(ctx.chatId, ctx.threadId,
+      'Another scan or setup is running right now — wait for it to finish, then try again.');
+    return;
+  }
+
+  const outcomes = [];
+  try {
+    const all = groupsForTargetDate_(targetDate, config);
+    const groups = scope ? all.filter((g) => groupInScope_(g, scope)) : all;
+
+    const stafferMap = getStafferMap();
+    groups.forEach((group) => {
+      try {
+        outcomes.push(sendScannedGroup_(group, stafferMap, config, ctx, parsed.dry));
+      } catch (err) {
+        // §6 — one bad message must not abandon the rest of the day.
+        logStatus_(buildGroupKey_(group), 'ERROR', `scan: ${err}`);
+        notifyError_(`⚠️ Roll call bot error (/scan, ${describeGroup_(group)}): ${err}`);
+        outcomes.push({
+          group, status: 'ERROR', matched: false, dest: '', unassigned: [],
+          detail: String((err && err.message) || err),
+        });
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+
+  sendReply_(ctx.chatId, ctx.threadId,
+    formatScanReport_(targetDate, outcomes, { parsed, scope, config }));
+}
+
+/**
+ * One scanned group through the same guards the nightly run uses, minus DRY_RUN
+ * — which pauses the *unattended* run, and someone typing a command is not
+ * unattended (§12.5).
+ *
+ * The ledger Detail records `scan: @handle`, so a late catch-up stays
+ * distinguishable from the 7 PM run in the audit trail.
+ */
+function sendScannedGroup_(group, stafferMap, config, ctx, preview) {
+  const target = group.target;
+  const dest = describeTarget_(target, ctx);
+  const base = { group, matched: target.matched, dest };
+
+  // Already out: report it and move on. Not a problem — it is the ledger doing
+  // its job, and it is the expected state for everything the 7 PM run caught.
+  const prior = findPriorSend_(group);
+  if (prior) {
+    return Object.assign({}, base, {
+      status: prior.sameMode ? 'SKIPPED_DUPLICATE' : 'SKIPPED_MODE_CHANGED',
+      unassigned: [],
+      detail: prior.key,
+    });
+  }
+
+  const unassigned = missingStafferAssignments_(group.events);
+  if (preview) return Object.assign({}, base, { status: 'WOULD_SEND', unassigned });
+
+  let message = renderDigest_(group, stafferMap, config);
+  if (!target.matched) {
+    message += `\n\n(⚠️ No Groups mapping for "${group.events[0].rawName}" — posted to the admin chat. Run /rollsetup in the right GC, or add a row in the Groups tab.)`;
+  }
+
+  sendTelegramMessage_(message, { parseMode: 'HTML', chatId: target.chatId, threadId: target.threadId });
+  logStatus_(
+    buildGroupKey_(group),
+    'SENT',
+    `${target.chatId}${target.threadId ? '/' + target.threadId : ''} (scan: ${ctx.userName})`
+  );
+
+  return Object.assign({}, base, { status: 'SENT', unassigned });
+}
+
+/**
+ * Whether a scanned group belongs to the sports this command is scoped to.
+ *
+ * Matched on the ROUTING RULE's keyword, not on the event text. The rule is what
+ * decides the destination, so scoping by it guarantees a scan can only post where
+ * the commanding GC's own mappings already point — there is no keyword phrasing
+ * that reaches further. Unmapped events belong to no rule and so are reachable
+ * only from `/scan all`, which is correct: they go to the admin chat, not a GC.
+ */
+function groupInScope_(group, scope) {
+  const keyword = group.target && group.target.keyword;
+  return !!keyword && scope.keywords.indexOf(keyword) !== -1;
+}
+
+/** How many per-message lines a scan report prints before summarising the rest. */
+const SCAN_REPORT_LIMIT = 12;
+
+/**
+ * The reply. Says what was scanned, what happened to each message, and — the
+ * part that earns its keep on a late night — what still needs a human, using the
+ * same predicates as the nightly report (§6.1) so the two can never disagree.
+ */
+function formatScanReport_(targetDate, outcomes, opts) {
+  const { parsed, scope, config } = opts;
+  const dateLabel =
+    `${MONTH_NAMES[targetDate.month - 1]} ${targetDate.day} ` +
+    `(${weekdayName_(targetDate.year, targetDate.month, targetDate.day)})`;
+  const what = scope ? scope.label : 'every mapped sport';
+
+  if (!outcomes.length) {
+    return [
+      `Scanned the tracker for ${dateLabel} — ${what}: nothing found.`,
+      '',
+      scope
+        ? 'Either there are genuinely no games that day, or the rows are there but don’t match this GC’s keyword. /scan all scans every sport; /groups shows what each keyword covers.'
+        : 'Either there are genuinely no games that day, or the rows are there with a different date — check the day number in the Date column of that month’s tab.',
+      parsed.today ? '' : 'For games later today rather than tomorrow, use /scan today.',
+    ].filter((line) => line !== '').join('\n');
+  }
+
+  const count = (status) => outcomes.filter((o) => o.status === status).length;
+  const sent = count('SENT');
+  const skipped = count('SKIPPED_DUPLICATE') + count('SKIPPED_MODE_CHANGED');
+  const failed = count('ERROR');
+
+  const headline = parsed.dry
+    ? `Dry scan of ${dateLabel} — ${what}: ${count('WOULD_SEND')} would post, ${skipped} already out.`
+    : `Scanned ${dateLabel} — ${what}: ${sent} posted, ${skipped} already out` +
+      `${failed ? `, ${failed} failed` : ''}.`;
+
+  const lines = [headline, ''];
+
+  outcomes.slice(0, SCAN_REPORT_LIMIT).forEach((o) => {
+    lines.push(`${statusIcon_(o.status)} ${describeGroup_(o.group)}${o.dest ? ` → ${o.dest}` : ''}`);
+  });
+  if (outcomes.length > SCAN_REPORT_LIMIT) {
+    lines.push(`…and ${outcomes.length - SCAN_REPORT_LIMIT} more`);
+  }
+
+  const problems = [];
+  outcomes.forEach((o) => {
+    const who = describeGroup_(o.group);
+    if (o.status === 'ERROR') problems.push(`• ${who}: FAILED — ${o.detail}`);
+    else if (o.status === 'SKIPPED_MODE_CHANGED') {
+      problems.push(
+        `• ${who}: nothing sent — this sport’s mode changed after part of the day was announced. ` +
+        'Check the GC, then /rollcall force if the roll call really is missing.'
+      );
+    } else if (!o.matched) {
+      problems.push(`• ${who}: no GC mapped — went to the admin chat. Run /rollsetup in its GC.`);
+    }
+    if (o.unassigned.length) problems.push(`• ${who}: ${o.unassigned.join(' and ')} unassigned in the tracker`);
+  });
+  if (problems.length) lines.push('', 'Needs a human:', ...problems);
+
+  if (parsed.dry) {
+    lines.push('', '— dry run, nothing sent and nothing logged. Run /scan without "dry" to post. —');
+  } else if (!sent && skipped) {
+    lines.push('', 'Nothing new — every roll call for that date was already out. If one is genuinely missing from a GC, /rollcall force reposts it.');
+  } else if (sent) {
+    lines.push('', 'Logged as sent, so tonight’s run will skip them.');
+  }
+
+  if (config.DRY_RUN && !parsed.dry && sent) {
+    lines.push('', '⚠️ Note: DRY_RUN is TRUE, so the nightly run is still paused. This scan posted anyway — a typed command is not an unattended run.');
+  }
+
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------
@@ -503,10 +714,15 @@ function handleHelp_(ctx) {
     '',
     '/rollsetup [sports] [session|event] [force] — map this topic as the Roll Call thread (admins)',
     '/rollcall [sport] [force] — post the next roll call for this GC now (admins)',
+    '/scan [sport|all] [today] [dry] — re-read the tracker now and post anything tonight’s run missed (admins)',
     '/next — preview the next roll call; posts nothing',
     '/rollwhere — IDs, mapping, and bot status for this topic',
     '/groups — every mapping, plus sports with no GC yet',
     '/unmap — stop routing roll calls to this topic (admins)',
+    '',
+    'Schedule released after the 7 PM run? Fill in the sheet, then /scan all.',
+    'It re-reads the tracker there and then and posts only what hasn’t gone out —',
+    'safe to run twice. /scan all dry lists what it would post first.',
     '',
     'Setup examples:',
     '  /rollsetup — infer the sport from this GC’s name',
@@ -644,6 +860,31 @@ function looksLikeSessionSport_(config, keyword) {
     8
   );
   return events.some((e) => /\bday\s*\d+/i.test(e.rawName));
+}
+
+/**
+ * Splits `/scan all dry` into { all: true, today: false, dry: true, keyword: '' }.
+ *
+ * Order-independent like splitSetupArgs_, and anything not a recognised flag is
+ * keyword text. `all` beats a keyword when both are typed — it is the wider of
+ * the two, and a scan that silently did *less* than what was asked for is the
+ * failure that leaves a GC without its roll call.
+ */
+function splitScanArgs_(args) {
+  const rest = [];
+  let all = false;
+  let today = false;
+  let dry = false;
+
+  (args || []).forEach((arg) => {
+    const token = String(arg).toLowerCase().replace(/,+$/, '');
+    if (token === 'all') all = true;
+    else if (token === 'today') today = true;
+    else if (token === 'dry' || token === 'preview') dry = true;
+    else rest.push(arg);
+  });
+
+  return { all, today, dry, keyword: rest.join(' ').trim().replace(/,+$/, '') };
 }
 
 /** Splits `/rollcall Football force` into { keyword: 'Football', force: true }. */

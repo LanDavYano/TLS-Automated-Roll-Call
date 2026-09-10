@@ -85,15 +85,43 @@ function findPriorSend_(group) {
   return null;
 }
 
+/**
+ * The `SENT` keys already in the ledger, memoised for this execution.
+ *
+ * `hasBeenSent_` is asked once per candidate key, and a session group checks its
+ * alternate-mode keys too — so a `/scan` across a dozen sports asks the same
+ * question dozens of times. Reading the whole tab each time turned that into
+ * dozens of round trips against a season's worth of rows, with an operator
+ * watching a chat window for the reply; a scan slow enough to look hung is a scan
+ * someone types a second time, which is the collision the lock then has to catch.
+ *
+ * Held for exactly one execution and no longer. Within one, the only writer is
+ * `logStatus_`, which appends and updates this set as it goes; an Apps Script
+ * global lives one execution, so another run's writes are seen by the next
+ * command, and the script lock is what keeps two senders from interleaving.
+ */
+let sentKeys_ = null;
+
+function loadSentKeys_() {
+  if (sentKeys_) return sentKeys_;
+
+  sentKeys_ = {};
+  getLogSheet_().getDataRange().getValues().slice(1).forEach((row) => {
+    if (row[2] === 'SENT') sentKeys_[row[1]] = true;
+  });
+  return sentKeys_;
+}
+
 function hasBeenSent_(eventKey) {
-  const sheet = getLogSheet_();
-  const rows = sheet.getDataRange().getValues().slice(1);
-  return rows.some((row) => row[1] === eventKey && row[2] === 'SENT');
+  return loadSentKeys_()[eventKey] === true;
 }
 
 function logStatus_(eventKey, status, detail) {
-  const sheet = getLogSheet_();
-  sheet.appendRow([new Date(), eventKey, status, detail || '']);
+  getLogSheet_().appendRow([new Date(), eventKey, status, detail || '']);
+
+  // Keep the memo honest within this execution: a scan sends several messages in
+  // a row, and the second must see the first's SENT row.
+  if (status === 'SENT' && sentKeys_) sentKeys_[eventKey] = true;
 }
 
 /** Testing helper: wipe all ledger rows, keeping the header, so a date can be re-sent from scratch. */
@@ -101,4 +129,5 @@ function clearLog_() {
   const sheet = getLogSheet_();
   const last = sheet.getLastRow();
   if (last > 1) sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).clearContent();
+  sentKeys_ = null;
 }

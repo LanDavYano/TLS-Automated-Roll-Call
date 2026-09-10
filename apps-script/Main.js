@@ -30,16 +30,11 @@ function runRollCall_() {
  */
 function sendMatchingEvents_(targetDate, config) {
   const stafferMap = getStafferMap();
-  const groupMap = getGroupMap();
-  const adminChatId = getAdminChatId_();
-  const monthName = MONTH_NAMES[targetDate.month - 1];
-
-  const events = parseMonthEvents(readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_());
-  const matching = filterEventsForDate_(events, targetDate);
-  const groups = groupEventsForSending_(matching, groupMap, adminChatId);
+  const groups = groupsForTargetDate_(targetDate, config);
+  const rowCount = groups.reduce((total, g) => total + g.events.length, 0);
 
   Logger.log(
-    `${matching.length} event(s) → ${groups.length} message(s) for ` +
+    `${rowCount} event(s) → ${groups.length} message(s) for ` +
     `${targetDate.year}-${targetDate.month}-${targetDate.day} (DRY_RUN=${config.DRY_RUN})`
   );
 
@@ -57,6 +52,29 @@ function sendMatchingEvents_(targetDate, config) {
 
   reportRun_(targetDate, outcomes, config);
   return outcomes;
+}
+
+/**
+ * Every message one date would produce, read fresh from the tracker: parse that
+ * month's tab, keep the rows resolving to the date, and collate them according to
+ * each sport's mode in the Groups tab (§4.5).
+ *
+ * The single place a date turns into messages. The nightly run, /scan, /next and
+ * the editor helpers all come through here, so none of them can disagree about
+ * what a given day contains — and a sheet edited a minute ago is picked up by
+ * every one of them, because nothing between the tab and this function is cached.
+ */
+function groupsForTargetDate_(targetDate, config) {
+  const monthName = MONTH_NAMES[targetDate.month - 1];
+  const events = parseMonthEvents(
+    readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_()
+  );
+
+  return groupEventsForSending_(
+    filterEventsForDate_(events, targetDate),
+    getGroupMap(),
+    getAdminChatId_()
+  );
 }
 
 function sendGroupRollCall_(group, stafferMap, config) {
@@ -147,6 +165,7 @@ function statusIcon_(status) {
   if (status === 'SKIPPED_DUPLICATE') return '⏭️';
   if (status === 'SKIPPED_MODE_CHANGED') return '⚠️';
   if (status === 'DRY_RUN') return '🌵';
+  if (status === 'WOULD_SEND') return '📝'; // /scan dry — nothing sent, nothing logged
   return '❌';
 }
 
@@ -363,17 +382,9 @@ function testRouting(dateString) {
   });
 }
 
-/** Shared by the render/routing helpers: the messages a date would produce. */
+/** Shared by the render/routing helpers: the messages a date string would produce. */
 function groupsForDate_(dateString, config) {
-  const targetDate = parseTargetDateString_(dateString);
-  const monthName = MONTH_NAMES[targetDate.month - 1];
-  const events = parseMonthEvents(readMonthRows_(monthName), monthName, config, getSpreadsheetTimeZone_());
-
-  return groupEventsForSending_(
-    filterEventsForDate_(events, targetDate),
-    getGroupMap(),
-    getAdminChatId_()
-  );
+  return groupsForTargetDate_(parseTargetDateString_(dateString), config);
 }
 
 // ---------------------------------------------------------------------

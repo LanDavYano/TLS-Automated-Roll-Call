@@ -111,7 +111,7 @@ Key–value pairs, header in row 1.
 | `SUMMARY_MODE` | `ATTENTION` | Post-run report to the admin chat — see §6.1 |
 | `DATA_START_COLUMN` | `B` | Column letter the Date block starts at, resolving every other column position (§2.1). Held per spreadsheet because it is a property of *that* tracker's shape |
 
-Telegram credentials live in **Script Properties**, not here — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, plus `WEB_APP_URL` and `WEBHOOK_SECRET` for the command layer (§12.5). `SPREADSHEET_ID` lives there too, for the same reason inverted: it selects *which* spreadsheet's Config tab is read, so it cannot live in one (§12.7).
+Telegram credentials live in **Script Properties**, not here — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, plus `WEB_APP_URL` and `WEBHOOK_SECRET` for the command layer (§12.5). `SPREADSHEET_ID` lives there too, for the same reason inverted: it selects *which* spreadsheet's Config tab is read, so it cannot live in one (§12.8).
 
 Config values must be read with sensible fallback defaults so a missing row does not crash the script.
 
@@ -429,6 +429,8 @@ A **dry run must never write `SENT`** — doing so would poison the ledger and m
 
 Create the tab automatically if missing. Hide it from normal view.
 
+`hasBeenSent_` reads the `SENT` keys **once per execution** and memoises them (`loadSentKeys_`), with `logStatus_` adding to the set as it appends. The lookup is per candidate key and a session group also checks its alternate-mode keys, so a `/scan` over a dozen sports asks dozens of times — one tab read each would be dozens of round trips against a season's rows while an operator waits on a reply, and a command slow enough to look hung is one that gets typed again. The memo is scoped to a single execution, which is the correct lifetime: another run's writes are picked up by the next command, and §12.6's script lock is what keeps two senders from interleaving.
+
 ---
 
 ## 6. Error handling
@@ -565,6 +567,7 @@ Rules that are not optional:
 |---|---|---|
 | `/rollsetup [sports] [session\|event] [force]` | admins | Map this topic as the Roll Call destination. Writes the `Groups` row. Keywords may be comma-separated; `session`/`event` sets the mode (§4.5); bare `/rollsetup session` retunes what is already mapped here; `force` maps a sport the tracker does not have yet. |
 | `/rollcall [sport] [force]` | admins | Post the next upcoming roll call for this GC now; logs `SENT`. |
+| `/scan [sport\|all] [today] [dry]` | admins | Re-run the nightly pass over tonight's target date, now, against the sheet as it currently stands — posting only what the ledger has not already seen. `all` widens past this GC's own sports; `today` retargets today; `dry` lists what it would post. See §12.6. |
 | `/next [sport]` | anyone | Preview the next roll call and its exact message, including how many rows it collates. Sends nothing, logs nothing. |
 | `/rollwhere` | anyone | Chat/thread IDs, mapping, `DRY_RUN`, season, trigger status. |
 | `/groups` | anyone | Every mapping in priority order, plus sports with upcoming games and no GC. |
@@ -606,11 +609,42 @@ The nightly run knows its target date, so it knows which month tab to open. The 
 - **`DRY_RUN` is deliberately ignored.** It pauses the *unattended* run; someone typing a command is not unattended. The reply says so when `DRY_RUN` is `TRUE`, so the operator knows the nightly run is still paused.
 - The `_log` Detail column records the pusher (`manual: @handle`), so the ledger stays auditable.
 
-### 12.6 Onboarding a new GC
+### 12.6 `/scan` — catching a schedule that lands after the run
+
+Organisers release schedules late. A drop at 7:06 PM is six minutes past the nightly run, and until this command the only recovery was to wait for the next night's run — by which time the games have been played.
+
+**The tracker is never cached.** `getSpreadsheet_()` memoises the *file handle* for one execution and nothing else; every tab is read live on every run and every command. A sheet edited a minute ago is already visible. What makes a late edit *look* ignored is the pair of things that follow a run:
+
+1. The **ledger** (§5) has entries for whatever did go out at 7 PM, so those messages are correctly skipped forever after.
+2. **`/rollcall` only ever offers the *next* upcoming event** (§12.4, `limit: 1`). After a run that is usually a game already marked `SENT`, so `/rollcall` refuses — and the rows typed in afterwards are never reached, because the search stopped at the first match. `/next` shows the same event, with `Status: already posted`.
+
+Both are correct in isolation and together they leave no path from chat to a newly-typed row. `/scan` is that path: it re-runs `sendMatchingEvents_`'s pass — same target date (`todayInManila_() + LEAD_DAYS`), same grouping, same ledger — over the sheet as it stands right now, and sends every message the ledger has not already seen.
+
+| Form | Scans |
+|---|---|
+| `/scan` | This GC's mapped sports, for the date tonight's run covers |
+| `/scan <sport>` | Another GC's sports, resolved exactly like `/rollcall <sport>` |
+| `/scan all` | Every sport in the tracker — the whole nightly pass |
+| `/scan today` | Today's date instead, for a schedule that lands on game day |
+| `/scan dry` | Lists what it would post; sends nothing, writes nothing |
+
+Design points that are not incidental:
+
+- **Idempotent by construction.** Every group goes through `findPriorSend_` before it is sent, so running `/scan` twice, or running it on a night when the 7 PM run already worked, posts nothing the second time. That property is the whole reason it is safe to reach for when you are not sure whether an edit saved — the answer to "should I run it again?" is always yes.
+- **No `force`.** Re-posting is a per-message decision (`/rollcall force`); a forced scan would re-announce an entire day to every GC at once, which is precisely what §5 exists to prevent.
+- **Scope is judged on the routing rule, not the event text** (`groupInScope_` matches `group.target.keyword` against the scope's keywords). The rule is what chose the destination, so a scoped scan can only post where this GC's own mappings already point — no keyword phrasing widens it. Unmapped events belong to no rule and are therefore reachable only from `/scan all`, which is right: they go to the admin chat, not a GC.
+- **Serialised on `LockService.getScriptLock()`.** The check-then-append on `_log` is not atomic, and a scan fires a day's worth of messages rather than one. The realistic collision is an operator who thinks the first `/scan` hung and types it again; the cost of losing that race is duplicate roll calls in every GC simultaneously. (`/rollcall` is unlocked and still races a concurrent `/scan` in a window of roughly a second — a narrower risk than restructuring a working send path, but a real one.)
+- **`DRY_RUN` is ignored, like every other command** (§12.5) — with a louder note in the reply, because a scan can post to a dozen GCs at once and "the bot is paused" is a reasonable thing to have believed. `/scan dry` is the way to look first; it is a *command* flag and unrelated to the Config key.
+- **The ledger Detail records `scan: @handle`**, distinguishing a late catch-up from the 7 PM run and from a `manual:` push.
+- The reply reuses `missingStafferAssignments_` and the unmapped-sport check from §6.1, so what a scan calls "needs a human" is exactly what the nightly report would have called it.
+
+**On the name.** `/scan` does not carry the `roll` prefix the other setup commands do (§12.2), so it is the one command in this bot without collision insurance. It is not among the `/recap` bot's known commands (`/setup`, `/recap`, `/sports`, `/whereami`), but if a bot sharing these groups ever answers `/scan` too, rename it to `/rollscan`: `CMD.SCAN` in Webhook.js, the menu entry in `publishCommandMenu()`, and the help text. Nothing else refers to the string.
+
+### 12.7 Onboarding a new GC
 
 Adding the bot to a group fires a `my_chat_member` update; the bot replies with the sport it inferred from the title and the one command to run. Setup starts before anyone has to remember a command exists — which is why `setupWebhook()` subscribes to `my_chat_member` and not just `message`.
 
-### 12.7 Deployment constraints
+### 12.8 Deployment constraints
 
 - **One webhook per bot token.** Registering here silently steals updates from any other script sharing the token. `setupWebhook()` refuses when a webhook already points elsewhere; `replaceExistingWebhook()` is the deliberate override. `checkWebhook()` prints the bot username and current URL.
 - **Always edit the existing deployment.** A new deployment mints a new `/exec` URL, and Telegram keeps POSTing to the dead one. Deploy → Manage deployments → ✏️ → New version.

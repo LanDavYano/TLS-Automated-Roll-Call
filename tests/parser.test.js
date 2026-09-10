@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const SOURCES = ['Parser.js', 'Groups.js', 'Template.js', 'Log.js'];
+const SOURCES = ['Parser.js', 'Groups.js', 'Template.js', 'Log.js', 'Commands.js'];
 
 const context = vm.createContext({ console });
 vm.runInContext(
@@ -49,6 +49,7 @@ const {
   normalizeForMatch_, splitKeywords_, sportMatchesKeyword_, groupEventsForSending_,
   renderDigest_, collapseTimes_, buildGroupKey_, findPriorSend_,
   missingStafferAssignments_, parseMonthEvents, columnsFor_,
+  splitScanArgs_, groupInScope_,
 } = context;
 
 let failures = 0;
@@ -342,6 +343,47 @@ check('event → session is also recognised',
 // An untouched sport must still report a clean "not sent".
 Object.keys(SENT).forEach((k) => delete SENT[k]);
 check('nothing sent → null', findPriorSend_(sessionGroup), null);
+
+// ---------------------------------------------------------------------
+// /scan — argument parsing and blast radius
+// ---------------------------------------------------------------------
+//
+// /scan is the one command that can post to several GCs from a single message,
+// so the two things worth pinning down are what the flags mean and, above all,
+// what a scan is allowed to touch. A scoping bug here does not throw: it posts
+// another sport's roll calls into the wrong group chat, or silently skips the
+// GC the operator was standing in.
+
+section('/scan — arguments and scope');
+
+check('bare /scan is this GC, tonight’s date, for real',
+  splitScanArgs_([]), { all: false, today: false, dry: false, keyword: '' });
+check('flags are order-independent',
+  splitScanArgs_(['dry', 'all']), { all: true, today: false, dry: true, keyword: '' });
+check('"today" retargets the date', splitScanArgs_(['today']).today, true);
+check('"preview" is accepted as a synonym for "dry"', splitScanArgs_(['preview']).dry, true);
+check('anything unrecognised is keyword text',
+  splitScanArgs_(['beach', 'volleyball']).keyword, 'beach volleyball');
+check('a comma-separated keyword list survives Telegram’s tokenising',
+  splitScanArgs_(['esports,', 'valorant,', 'nba2k']).keyword, 'esports, valorant, nba2k');
+check('"all" is set even when a keyword is typed alongside it, and wins',
+  splitScanArgs_(['all', 'football']).all, true);
+
+// Scope is judged on the ROUTING RULE that claimed the event, not on the event
+// text — the rule is what picked the destination, so a scan can only ever post
+// where the commanding GC's own mappings already point.
+const scanScope = { keywords: ['fencing'], label: 'fencing' };
+const scanGroup = (events) => groupEventsForSending_(events, groupMap, 'ADMIN')[0];
+
+check('a scoped scan posts its own sport',
+  groupInScope_(scanGroup(fencing), scanScope), true);
+check('...and never another GC’s',
+  groupInScope_(scanGroup([event('VALORANT: DLSU v UST')]), scanScope), false);
+check('a rule’s whole keyword list is one scope, however the sport was matched',
+  groupInScope_(scanGroup([event('VALORANT: DLSU v UST')]),
+    { keywords: ['esports, valorant, nba2k'], label: 'esports, valorant, nba2k' }), true);
+check('an unmapped event is in no scope, so only /scan all reaches it',
+  groupInScope_(scanGroup([event('UAAP: Opening ceremony')]), scanScope), false);
 
 // ---------------------------------------------------------------------
 // Sheet layout — the same games, typed into two differently-shaped trackers

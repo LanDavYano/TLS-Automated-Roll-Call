@@ -91,7 +91,7 @@ TLS-Automated-Roll-Call/
     ├── Template.js          message rendering + HTML escaping
     ├── Telegram.js          Telegram send/reply, admin check, error notify
     ├── Webhook.js           doPost, command routing, webhook setup helpers
-    ├── Commands.js          /rollsetup, /rollcall, /next, /rollwhere, /groups, /unmap
+    ├── Commands.js          /rollsetup, /rollcall, /scan, /next, /rollwhere, /groups, /unmap
     └── Log.js               _log tab: idempotency ledger + error trail
 ```
 
@@ -145,6 +145,7 @@ All of these are **data edits** — no code, no `clasp`, no redeploy. They take 
 | **Add / change a staffer** | Staffers tab → add or edit a `Name | Handle` row. The name must match what's typed in the Recap/Livetweet columns. |
 | **Add a sport / wire up a new GC** | In Telegram: add the bot to the GC, open its **Roll Call** topic, type `/rollsetup`. See §7.2. |
 | **Post a roll call right now** | In the GC: `/rollcall`. It posts the next upcoming game and marks it done. |
+| **⏰ Schedule released *after* the 7 PM run** | Fill in the month tab, then in any GC: `/scan all`. It re-reads the tracker there and then and posts every roll call that hasn't gone out yet. Safe to run twice — anything already sent is skipped. See §7.4. |
 | **Check what's coming** | In the GC: `/next` (preview, sends nothing) or `/groups` (what's mapped, what isn't). |
 | **Stop a GC receiving roll calls** | In the GC: `/unmap`. Reversible — it sets `Active = FALSE`, it doesn't delete. |
 | **Look further ahead** | Config tab → change `LEAD_DAYS` (1 = tomorrow, 2 = two days out, …). |
@@ -221,6 +222,10 @@ Then verify without sending anything: `/next` shows the next game and the exact 
 | `/rollcall` | admins | Posts this GC's next upcoming roll call **now** and logs it as sent, so tonight's run skips it. |
 | `/rollcall <sport>` | admins | Same, for another sport's GC — useful from the admin chat. |
 | `/rollcall force` | admins | Overrides the "already posted" and "that game is weeks away" guards. |
+| `/scan` | admins | Re-reads the tracker **now** and posts anything for tonight's date that hasn't gone out yet — this GC's sports only. See §7.4. |
+| `/scan all` | admins | Same, but every sport in the tracker. This is the one for a late schedule release. |
+| `/scan today` | admins | Same, but for **today's** games instead of tomorrow's. |
+| `/scan dry` | admins | Lists what a scan would post. **Sends nothing, logs nothing.** Combines: `/scan all dry`. |
 | `/next` | anyone | Previews the next game and the exact roll call text. **Sends nothing, logs nothing.** |
 | `/rollwhere` | anyone | Chat ID, thread ID, what this topic is mapped to, `DRY_RUN`, season, trigger status. |
 | `/groups` | anyone | Every mapping in priority order, **plus sports with upcoming games and no GC yet** — the season's to-do list. |
@@ -236,6 +241,23 @@ Notes worth knowing:
 - **`/rollcall` posts the whole message**, not one row. For a session-mode sport that means the entire day — posting one fencing bout and leaving the other two would be worse than not posting at all.
 - **Changing a sport's mode mid-season is safe.** The ledger checks both modes' keys, so a roll call already sent is never posted twice. If it went out under the old mode, the run reports `SKIPPED_MODE_CHANGED` and asks you to look, rather than silently re-posting.
 - **Why `/rollsetup` and `/rollwhere`, not `/setup` and `/whereami`?** The `/recap` bot lives in these same groups and already owns `/setup`, `/recap`, `/sports`, and `/whereami`. Telegram sends a bare command to *every* bot in a group — no bot can claim a name — so both would answer, one succeeding and one erroring. Distinct names are the fix. **Don't rename them back.** If you ever add a third bot here, check its commands against this list first.
+
+### 7.4 ⏰ When the schedule drops after 7 PM
+
+The run fires at 7 PM and announces tomorrow's games. If the organisers release the schedule at 7:06, that run has already been and gone, and you have just typed a day's worth of games into a sheet nothing is going to read until tomorrow night.
+
+**Fill in the month tab as normal, then type `/scan all` in any GC you admin.**
+
+That re-reads the tracker on the spot and posts every roll call for tomorrow that hasn't gone out yet. The reply tells you what it posted, what was already out, and what still needs you — a game with no staffer assigned, or a sport with no GC mapped.
+
+Things worth knowing:
+
+- **It is safe to run twice.** Every message is checked against the same ledger the nightly run uses, so a second `/scan` posts nothing extra. If you're not sure whether your edit saved, just run it again.
+- **`/scan all dry` shows you first.** Same scan, sends nothing, logs nothing — use it if a whole day's worth of posting makes you nervous.
+- **Plain `/scan` is narrower**, covering only the sports the GC you're standing in is mapped to. Handy when just one sport's schedule landed late.
+- **`/scan today`** is for a schedule that lands on game day itself — the normal scan looks at tomorrow, because that's what the nightly run does.
+- **There's no `force`.** If a roll call went out and then got deleted, that's a one-message problem: `/rollcall force` in that GC. A forced scan would re-announce the whole day to everyone.
+- **Why `/rollcall` doesn't cover this:** it only ever offers the *next* upcoming game, which right after a run is usually one already posted — so it refuses, and never reaches the rows you just typed in. Nothing is cached and nothing is stale; the sheet is read live every single time. `/scan` exists because that one-game-at-a-time shape has no way to reach a row added after the fact.
 
 ---
 
@@ -370,6 +392,8 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 | Symptom | Likely cause & fix |
 |---|---|
 | **No messages at all** | Is `DRY_RUN` `FALSE`? Is the trigger installed (`listTriggers`)? Do the live month tabs actually have games dated for tomorrow? |
+| **⏰ Filled in the sheet after 7 PM and nothing happened** | The run had already fired. Type `/scan all` — it re-reads the tracker right now and posts what's missing (§7.4). Nothing is cached; `/rollcall` just can't reach a row added after the fact, because it only ever offers the *next* game and that one is usually already posted. |
+| **`/scan` says "nothing found" for a date you just typed in** | The rows are on a different date than you think, or on another month's tab. Check the day number in the Date column — a blank one forward-fills from the row above. `/scan all dry` lists what the bot sees without sending anything. |
 | **"Sent" in the log but nothing in the group** | Wrong Chat/Thread ID in the Groups tab, **or the group's ID changed** (e.g. upgraded to a supergroup — gains a `-100` prefix). Re-run `harvestChatIds()` and update the Groups tab. The `_log` Detail column shows the `chatId/threadId` each message targeted. |
 | **Roll call landed in the admin chat with a ⚠️ warning** | That sport has no GC mapped. Run `/rollsetup` in its group's Roll Call topic (§7.2). `/groups` lists everything still unmapped. |
 | **Wrong topic (tab) within the right group** | Run `/rollsetup` again in the **correct** Roll Call topic — the row moves. (`/rollwhere` shows what the current topic is mapped to.) |
@@ -395,7 +419,8 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 ## 11. Design notes worth knowing
 
 - **Read-only** except the `_log` tab and the `Groups` tab (written only by `/rollsetup` and `/unmap`) — the bot never edits event data.
-- **Idempotency** is keyed on `date + sport + opponent + time`. A dry run logs `DRY_RUN` (not `SENT`) so it never blocks a later real send. `/rollcall` writes the same `SENT` rows the nightly run checks — that shared ledger is what makes a manual push safe.
+- **Idempotency** is keyed on `date + sport + opponent + time`. A dry run logs `DRY_RUN` (not `SENT`) so it never blocks a later real send. `/rollcall` and `/scan` write the same `SENT` rows the nightly run checks — that shared ledger is what makes a manual push safe, and what makes `/scan` safe to run as many times as you like.
+- **Nothing about the tracker is cached.** Every tab — Config, Staffers, Groups, the month tabs — is read live on every run and every command, so an edit is visible to the next thing that runs. Only the spreadsheet *handle* is memoised, and only for the few seconds one execution lasts.
 - **`/rollsetup` only accepts a sport the tracker actually has.** A mapping to a sport nobody plays fails invisibly: no error, no alert, just a roll call that never arrives, noticed weeks later by the staffer who wasn't told about their game.
 - **New Groups rows are placed, not appended.** A `3x3` row below `Basketball` would never win, since a 3x3 game's sport contains both words — and keyword *length* is no guide either (`basketball` is longer than `3x3`). So `/rollsetup` looks at which sports the new keyword matches and inserts above the first existing rule that also matches them.
 - **`doPost` always returns 200.** Telegram retries anything else, and a retried `/rollcall` is a double post.
