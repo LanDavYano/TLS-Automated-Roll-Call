@@ -126,16 +126,22 @@ function unionDeliverables_(events) {
   return DELIVERABLE_LABELS.filter((label) => seen[label]);
 }
 
-/** Union of a staffer column across the group, deduplicated, order preserved. */
+/**
+ * Union of a staffer column across the group, deduplicated, order preserved.
+ *
+ * Deduplicated on the bare name, so "Lance (ol)" on one fencing session and
+ * "Lance" on the next is one staffer, not two. The first spelling seen is the
+ * one kept, note included.
+ */
 function unionStafferNames_(events, field) {
   const seen = {};
   const names = [];
 
-  events.forEach((e) => (e[field] || []).forEach((name) => {
-    const key = name.toLowerCase();
+  events.forEach((e) => (e[field] || []).forEach((entry) => {
+    const key = splitStafferNote_(entry).name.toLowerCase();
     if (seen[key]) return;
     seen[key] = true;
-    names.push(name);
+    names.push(entry);
   }));
 
   return names;
@@ -212,11 +218,19 @@ function renderTitle_(group, config) {
 // Staffer lines
 // ---------------------------------------------------------------------
 
-/** §3.5 — resolve each staffer name to its handle, or flag it if unknown. */
+/**
+ * §3.5 — resolve each staffer entry to its handle, or flag it if unknown.
+ *
+ * Only the name is looked up; a note like "(ol)" is re-attached afterwards, so
+ * "Lance (ol)" renders as "@lance (ol)" rather than missing the Staffers tab
+ * on account of its suffix.
+ */
 function resolveStafferHandles_(names, stafferMap) {
-  return names.map((name) => {
+  return names.map((entry) => {
+    const { name, note } = splitStafferNote_(entry);
     const handle = stafferMap[name.toLowerCase()];
-    return handle ? handle : `${name} (no handle on file)`;
+    const shown = handle ? handle : `${name} (no handle on file)`;
+    return note ? `${shown} ${note}` : shown;
   });
 }
 
@@ -228,7 +242,7 @@ function resolveStafferHandles_(names, stafferMap) {
  * (Parser.js) to read the flag, so `Recap` and `Livetweet` here must stay
  * spelled exactly as they are there. The sheet uses the same word for two
  * different columns — the Yes/No flag at offset +7 and the staffer names at
- * +16 — and this pairing is the only place the two are tied together.
+ * +17 — and this pairing is the only place the two are tied together.
  */
 const STAFFER_FIELDS = [
   { label: 'Recap', field: 'recapNames' },

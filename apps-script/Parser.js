@@ -8,6 +8,20 @@
  */
 
 /**
+ * §3.7 — the ten deliverable columns, in sheet order starting at
+ * LAYOUT.DELIVERABLES_START. Order is load-bearing twice over: it maps each
+ * column to its label here, and it's the order the labels are re-emitted in when
+ * a group's deliverables are unioned for rendering (Template.js).
+ *
+ * Declared before LAYOUT because LAYOUT derives the staffer columns from its
+ * length — a new deliverable column is added here, and only here.
+ */
+const DELIVERABLE_LABELS = [
+  'Game Day', 'HN', 'Livetweet', 'HT', 'Buzzer', 'POTG', 'Album Caption', 'Recap',
+  'Article Slides', 'IGs',
+];
+
+/**
  * Column positions, expressed RELATIVE to the column the Date block starts in.
  *
  * Relative because the trackers genuinely differ. The current sheet keeps a
@@ -17,8 +31,11 @@
  * which is what makes one script able to read both. The offset is per
  * spreadsheet, set as DATA_START_COLUMN in that sheet's Config tab (§2.4).
  *
- * Offset 14 (column P on the current sheet) is deliberately absent: it holds
- * the photo assignment, which no roll call mentions.
+ * The staffer block sits one column past the last deliverable: that gap
+ * (offset 15, column Q on the current sheet) holds the photo assignment, which
+ * no roll call mentions, so it is deliberately absent here. RECAP and LIVETWEET
+ * are derived rather than typed so that inserting a deliverable column — which
+ * shifts everything to its right — needs only a label in DELIVERABLE_LABELS.
  */
 const LAYOUT = {
   DAY: 0,                 // first column of the Date block
@@ -26,20 +43,10 @@ const LAYOUT = {
   TIME: 2,
   EVENT: 3,
   VENUE: 4,
-  DELIVERABLES_START: 5,  // nine columns, in DELIVERABLE_LABELS order
-  RECAP: 15,
-  LIVETWEET: 16,
+  DELIVERABLES_START: 5,  // DELIVERABLE_LABELS.length columns, in that order
+  RECAP: 5 + DELIVERABLE_LABELS.length + 1,      // 16 — skips the photo column
+  LIVETWEET: 5 + DELIVERABLE_LABELS.length + 2,  // 17
 };
-
-/**
- * §3.7 — the nine deliverable columns, in sheet order starting at
- * DELIVERABLES_START. Order is load-bearing twice over: it maps each column to
- * its label here, and it's the order the labels are re-emitted in when a group's
- * deliverables are unioned for rendering (Template.js).
- */
-const DELIVERABLE_LABELS = [
-  'Game Day', 'HN', 'Livetweet', 'HT', 'Buzzer', 'POTG', 'Album Caption', 'Recap', 'IGs',
-];
 
 /**
  * LAYOUT resolved to absolute 0-indexed columns for one spreadsheet's Config.
@@ -266,7 +273,7 @@ function parseTime_(raw, tz) {
   return String(raw || '').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** §3.7 — the nine deliverable columns marked "Yes", as display labels, in column order. */
+/** §3.7 — the deliverable columns marked "Yes", as display labels, in column order. */
 function getDeliverables_(row, cols) {
   const labels = [];
   DELIVERABLE_LABELS.forEach((label, i) => {
@@ -276,12 +283,46 @@ function getDeliverables_(row, cols) {
   return labels;
 }
 
-/** §3.5 — comma-separated names, trimmed, empties dropped. Never forward-filled. */
+/**
+ * §3.5 — comma-separated entries, trimmed, empties dropped. Never forward-filled.
+ *
+ * Entries are kept as typed ("Lance (ol)"), note and all. The note is separated
+ * out where it matters — the Staffers lookup and the dedupe across a session's
+ * rows — by splitStafferNote_, so the raw text stays the one source of truth.
+ */
 function parseStafferNames_(raw) {
   return String(raw || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * §3.5 — "Lance (ol)" → { name: 'Lance', note: '(ol)' }.
+ *
+ * Staffers annotate an assignment in parentheses after the name — "(ol)" marks
+ * whoever is covering online. That is a fact about the assignment, not part of
+ * the name, so it must not reach the Staffers lookup (where "lance (ol)" would
+ * miss and the roll call would read "Lance (ol) (no handle on file)"). It is
+ * still worth showing: the roll call re-attaches it after the handle, so the
+ * staffer reading it knows they are the online one.
+ *
+ * Any parenthesised text counts, not just "(ol)" — the convention is the
+ * parentheses, and the word inside is the editor's to choose. An entry that is
+ * *only* a note ("(TBD)") keeps its text as the name rather than vanishing.
+ */
+function splitStafferNote_(entry) {
+  const notes = [];
+  const name = String(entry || '')
+    .replace(/\s*\(([^)]*)\)/g, (match, inner) => {
+      if (inner.trim()) notes.push(`(${inner.trim()})`);
+      return ' ';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!name) return { name: String(entry || '').trim(), note: '' };
+  return { name, note: notes.join(' ') };
 }
 
 /**

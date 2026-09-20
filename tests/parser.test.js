@@ -49,8 +49,13 @@ const {
   normalizeForMatch_, splitKeywords_, sportMatchesKeyword_, groupEventsForSending_,
   renderDigest_, collapseTimes_, buildGroupKey_, findPriorSend_,
   missingStafferAssignments_, parseMonthEvents, columnsFor_,
-  splitScanArgs_, groupInScope_,
+  splitScanArgs_, groupInScope_, splitStafferNote_, resolveStafferHandles_,
+  unionStafferNames_,
 } = context;
+
+// A top-level `const` lives in the context's lexical scope, not on its global
+// object, so it is read back by evaluating its name rather than destructured.
+const DELIVERABLE_LABELS = vm.runInContext('DELIVERABLE_LABELS', context);
 
 let failures = 0;
 let checks = 0;
@@ -268,7 +273,7 @@ check('and are not double-wrapped',
 
 // ---------------------------------------------------------------------
 // "Livetweet" names two different columns: the Yes/No deliverable flag at
-// offset +7 and the staffer names at +16. A blank staffer cell is only a
+// offset +7 and the staffer names at +17. A blank staffer cell is only a
 // mistake when the flag says the deliverable was actually wanted — warning on a
 // game nobody is meant to livetweet is a false alarm, and it reached both the
 // roll call and the nightly admin summary.
@@ -316,6 +321,50 @@ const neitherMsg = renderDigest_(neither, staffers, config);
 check('both lines droppable at once',
   [neitherMsg.indexOf('Recap') === -1, neitherMsg.indexOf('Livetweet') === -1], [true, true]);
 check('...and no blank-line gap is left behind', neitherMsg.indexOf('\n\n\n') === -1, true);
+
+// ---------------------------------------------------------------------
+// Staffer notes — "Lance (ol), David" is how editors mark who covers online.
+// The note is part of the assignment, not the name: it must not reach the
+// Staffers lookup (which would miss and print "no handle on file" for a staffer
+// who is on file), but it must survive into the roll call, because the whole
+// point of typing it was to tell that staffer they are the online one.
+// ---------------------------------------------------------------------
+
+section('Staffer notes — "(ol)" is stripped for lookup, kept for display');
+
+check('note split off the name', splitStafferNote_('Lance (ol)'), { name: 'Lance', note: '(ol)' });
+check('no note → empty note', splitStafferNote_('David'), { name: 'David', note: '' });
+check('spacing inside the parens is tolerated',
+  splitStafferNote_('Lance ( ol )'), { name: 'Lance', note: '(ol)' });
+check('no space before the paren',
+  splitStafferNote_('Lance(ol)'), { name: 'Lance', note: '(ol)' });
+check('any word works, not just "ol"',
+  splitStafferNote_('Mika (onsite)'), { name: 'Mika', note: '(onsite)' });
+check('an entry that is only a note keeps its text as the name',
+  splitStafferNote_('(TBD)'), { name: '(TBD)', note: '' });
+
+const noteStaffers = { lance: '@lancej', david: '@davidr' };
+check('lookup uses the bare name and re-attaches the note',
+  resolveStafferHandles_(['Lance (ol)', 'David'], noteStaffers), ['@lancej (ol)', '@davidr']);
+check('an unknown name still gets the marker, note after it',
+  resolveStafferHandles_(['Wyn (ol)'], noteStaffers), ['Wyn (no handle on file) (ol)']);
+
+// Across a session-mode day, one staffer typed with and without the note is one
+// person. The first spelling wins, so the note is kept when it came first.
+check('dedupe ignores the note',
+  unionStafferNames_([{ recapNames: ['Lance (ol)'] }, { recapNames: ['lance', 'David'] }], 'recapNames'),
+  ['Lance (ol)', 'David']);
+
+// End to end, the way the sheet actually has it typed.
+const noted = groupEventsForSending_(
+  [event("R1 Men's Football: DLSU v UE",
+    { deliverables: ['HN', 'Recap'], recapNames: ['Lance (ol)', 'David'], livetweetNames: [] })],
+  groupMap, 'ADMIN'
+)[0];
+check('the roll call shows the handle with the note',
+  renderDigest_(noted, noteStaffers, config).indexOf('Recap: @lancej (ol), @davidr') !== -1, true);
+check('...and the note never trips the unassigned check',
+  missingStafferAssignments_(noted.events), []);
 
 section('Idempotency across a mid-season mode change');
 
@@ -399,12 +448,16 @@ section('Sheet layout — a one-column shift must not change the parsed result')
 
 const LAYOUT_CONFIG = { SEASON_START_YEAR: 2025, SEASON_START_MONTH: 9, DATA_START_COLUMN: 1 };
 
-/** One row of the September tab, in the "Date block starts at A" shape. */
+/**
+ * One row of the September tab, in the "Date block starts at A" shape. The ten
+ * flags run Game Day, HN, Livetweet, HT, Buzzer, POTG, Album, Recap Article,
+ * Article Slides, IGs; then the photo column, then the Recap and Livetweet staffers.
+ */
 const ROWS_AT_A = [
   [10, 'Mon', '1:30 PM', 'Esports Mobile Legends: Bang Bang!: DLSU v NU', 'MVP Studios',
-   'No', 'Yes', 'No', 'No', 'Yes', 'No', 'Yes', 'Yes', 'No', '', 'Lance', 'Wyn'],
+   'No', 'Yes', 'No', 'No', 'Yes', 'No', 'Yes', 'Yes', 'Yes', 'No', '', 'Lance', 'Wyn'],
   [11, 'Tue', '4:30 PM', 'VALORANT: DLSU v UST', 'MVP Studios',
-   'No', 'Yes', 'No', 'No', 'Yes', 'No', 'Yes', 'Yes', 'No', '', 'Lance, Mika', ''],
+   'No', 'Yes', 'No', 'No', 'Yes', 'No', 'Yes', 'Yes', 'No', 'No', '', 'Lance, Mika', ''],
 ];
 
 /** The identical rows in the current tracker's shape: one spacer column in A. */
@@ -415,13 +468,20 @@ const parsedAtA = parseMonthEvents(
   ROWS_AT_A, 'September', Object.assign({}, LAYOUT_CONFIG, { DATA_START_COLUMN: 0 }), null
 );
 
-check('column letters resolve (B → Date at index 1, Event at 4, Livetweet at 17)',
-  [columnsFor_(LAYOUT_CONFIG).DAY, columnsFor_(LAYOUT_CONFIG).EVENT, columnsFor_(LAYOUT_CONFIG).LIVETWEET],
-  [1, 4, 17]);
+// The staffer columns are derived from the label count, so a deliverable added
+// to DELIVERABLE_LABELS moves them without a second edit — and a fixture row
+// that is one cell short of that count is the test being wrong, not the code.
+check('ten deliverable columns, Article Slides between Recap and IGs',
+  [DELIVERABLE_LABELS.length, DELIVERABLE_LABELS.slice(7)],
+  [10, ['Recap', 'Article Slides', 'IGs']]);
+check('column letters resolve (B → Date at index 1, Event at 4, Recap at 17, Livetweet at 18)',
+  [columnsFor_(LAYOUT_CONFIG).DAY, columnsFor_(LAYOUT_CONFIG).EVENT,
+   columnsFor_(LAYOUT_CONFIG).RECAP, columnsFor_(LAYOUT_CONFIG).LIVETWEET],
+  [1, 4, 17, 18]);
 check('...and shift wholesale when the Date block starts at A',
   [columnsFor_({ DATA_START_COLUMN: 0 }).DAY, columnsFor_({ DATA_START_COLUMN: 0 }).EVENT,
    columnsFor_({ DATA_START_COLUMN: 0 }).LIVETWEET],
-  [0, 3, 16]);
+  [0, 3, 17]);
 check('a Config with no DATA_START_COLUMN keeps the existing layout',
   columnsFor_({}).DAY, 1);
 
@@ -434,13 +494,18 @@ check('event name is read from the right column, colon-in-title intact',
 check('the two titles stay separate families', parsedAtB[1].family, 'VALORANT');
 check('venue is read from the correct column', parsedAtB[0].venue, 'MVP Studios');
 check('deliverables map to their labels, in column order',
-  parsedAtB[0].deliverables, ['HN', 'Buzzer', 'Album Caption', 'Recap']);
+  parsedAtB[0].deliverables, ['HN', 'Buzzer', 'Album Caption', 'Recap', 'Article Slides']);
+check('Article Slides: No is left out', parsedAtB[1].deliverables, ['HN', 'Buzzer', 'Album Caption', 'Recap']);
 check('the photo column between IGs and Recap is skipped',
   [parsedAtB[0].recapNames, parsedAtB[0].livetweetNames], [['Lance'], ['Wyn']]);
 check('comma-separated staffers still split', parsedAtA[1].recapNames, ['Lance', 'Mika']);
 
+const slides = groupEventsForSending_([parsedAtB[0]], groupMap, 'ADMIN')[0];
+check('Article Slides reaches the Deliverables line, in column order',
+  renderDigest_(slides, staffers, config).indexOf('Deliverables:\nHN, Buzzer, Album Caption, Recap, Article Slides') !== -1, true);
+
 // End to end on the real shape that produced the false alarm: row 2 has the
-// Livetweet flag at +7 set to No and the Livetweet staffer cell at +16 blank.
+// Livetweet flag at +7 set to No and the Livetweet staffer cell at +17 blank.
 // Nobody is meant to livetweet it, so the roll call must not ask who forgot to.
 const valorant = groupEventsForSending_([parsedAtB[1]], groupMap, 'ADMIN')[0];
 check('a No-flagged, unstaffed Livetweet raises nothing, sheet to message',

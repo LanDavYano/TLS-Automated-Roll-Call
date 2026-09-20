@@ -1,7 +1,8 @@
 /**
  * Staffers tab reader (SPEC.md §2.3). Keys are stored lower-cased and
- * trimmed since matching against columns Q/R is case-insensitive and
- * whitespace-trimmed.
+ * trimmed since matching against the Recap/Livetweet staffer columns is
+ * case-insensitive and whitespace-trimmed. A note typed after a name in those
+ * columns ("Lance (ol)") is stripped before lookup — see splitStafferNote_.
  */
 
 function getStafferMap() {

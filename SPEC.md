@@ -70,19 +70,22 @@ The parser therefore stores positions **relative to the Date block** (`LAYOUT` i
 | L | +10 | `POTG` | Deliverable flag |
 | M | +11 | `Album` | Deliverable flag |
 | N | +12 | `Recap Article` | Deliverable flag |
-| O | +13 | `IGs` | Deliverable flag |
-| P | +14 | Photo staffers | **Ignore** |
-| Q | +15 | **Sports — Recap staffers** | Comma-separated names. **Used.** |
-| R | +16 | **Sports — Livetweet staffers** | Comma-separated names. **Used.** |
-| S–V | +17… | Web / Layout / Execs | **Ignore** |
+| O | +13 | `Article Slides` | Deliverable flag — added mid-Season 88, inserted between Recap Article and IGs |
+| P | +14 | `IGs` | Deliverable flag |
+| Q | +15 | Photo staffers | **Ignore** |
+| R | +16 | **Sports — Recap staffers** | Comma-separated names, optionally annotated (§3.5). **Used.** |
+| S | +17 | **Sports — Livetweet staffers** | Comma-separated names, optionally annotated (§3.5). **Used.** |
+| T–W | +18… | Web / Layout / Execs | **Ignore** |
 
-Only the **Recap and Livetweet** columns (+15, +16) are read for staffer assignment. The photo column at +14 and everything past +16 exist in the sheet but are out of scope.
+Only the **Recap and Livetweet** columns (+16, +17) are read for staffer assignment. The photo column at +15 and everything past +17 exist in the sheet but are out of scope.
+
+The staffer offsets are **derived** in `LAYOUT` (Parser.js) as `DELIVERABLES_START + DELIVERABLE_LABELS.length + 1` and `+ 2` — the staffer block always sits one column (photo) past the last deliverable. Adding another deliverable column to the sheet is therefore one edit: its label, at the right position, in `DELIVERABLE_LABELS`.
 
 **A wrong `DATA_START_COLUMN` fails silently, not loudly.** Reading one column left of the real Date block puts the weekday abbreviation where the day number should be; `resolveDayOfMonth_` accepts neither a `Date` nor a number there, so every row forward-fills — from `null`, since there is no prior row. No event ever matches a target date, nothing throws, and nothing is logged. `testLayout()` exists to make that state visible in one run, and the layout suite in `tests/parser.test.js` asserts that both shapes parse to identical events.
 
 ### 2.2 Header merge structure (for reference)
 
-Row 2 has group headers (`B2:D4` = Date block, `G2:O2` = Deliverables, `P2:V2` = Staffers Assigned). Row 3 has sub-headers, some merged down into row 4 (`G3:G4`, `H3:H4`, ...). `Q3:R3` is a merged "Sports" header, with `Q4=Recap` and `R4=Livetweet` beneath it.
+Row 2 has group headers (`B2:D4` = Date block, `G2:P2` = Deliverables, `Q2:W2` = Staffers Assigned). Row 3 has sub-headers, some merged down into row 4 (`G3:G4`, `H3:H4`, ...). `R3:S3` is a merged "Sports" header, with `R4=Recap` and `S4=Livetweet` beneath it.
 
 **Do not parse headers.** Column positions are fixed. Read by column index.
 
@@ -94,7 +97,7 @@ Row 2 has group headers (`B2:D4` = Date block, `G2:O2` = Deliverables, `P2:V2` =
 | `Staffer 1` | `@handle1` |
 | `Staffer 2` | `@handle2` |
 
-Row 1 is a header. Names must match what is typed in columns Q and R. Matching is **case-insensitive and whitespace-trimmed**.
+Row 1 is a header. Names must match what is typed in the Recap and Livetweet staffer columns (R and S), minus any parenthesised note — `Lance (ol)` in the tracker matches a `Lance` row here (§3.5). Matching is **case-insensitive and whitespace-trimmed**.
 
 ### 2.4 Config tab
 
@@ -149,7 +152,7 @@ for (const row of rows) {
 }
 ```
 
-**Venue (offset +4, column F) is also merged** in at least one case (`F14:F15`). Forward-fill venue the same way. Do **not** forward-fill the staffer columns (+15, +16) — see §3.5.
+**Venue (offset +4, column F) is also merged** in at least one case (`F14:F15`). Forward-fill venue the same way. Do **not** forward-fill the staffer columns (+16, +17) — see §3.5.
 
 ### 3.2 Year resolution
 
@@ -223,13 +226,21 @@ What survives is deliberately specific. `3x3 Basketball` stays distinct from `Ba
 
 Verified against every real event name in `tests/parser.test.js` (`node tests/parser.test.js`). That file lives outside `apps-script/` on purpose — Apps Script concatenates every pushed file into one global scope, so a test file's declarations collide with the source's and break the project at parse time.
 
-### 3.5 Staffer parsing — columns Q and R
+### 3.5 Staffer parsing — columns R and S
 
 Comma-separated names. Split on `,`, trim each, drop empties.
 
-**Do not forward-fill Q or R.** Two games on the same day have *different* staffers per game; an empty cell means genuinely unassigned, not "same as above."
+**Do not forward-fill R or S.** Two games on the same day have *different* staffers per game; an empty cell means genuinely unassigned, not "same as above."
 
-Resolve each name via the `Staffers` tab (case-insensitive, trimmed). If a name has no matching handle, output the raw name followed by a marker rather than dropping it:
+**A name may carry a note in parentheses** — `Lance (ol), David` is how editors mark who is covering online. The note is a fact about the assignment, not part of the name. `splitStafferNote_` (Parser.js) separates the two: the bare name goes to the `Staffers` lookup, and the note is re-attached after whatever the lookup produced, so the staffer reading the roll call still sees it:
+
+```
+Recap: @lancej (ol), @davidr
+```
+
+Any parenthesised text is treated this way, not only `(ol)` — the parentheses are the convention, the word inside is the editor's. An entry that is *only* a note (`(TBD)`) keeps its text as the name. Dedupe across a session-mode group (§4.5) is on the bare name, so `Lance (ol)` on one row and `Lance` on the next is one staffer; the first spelling seen is kept.
+
+Resolve each name via the `Staffers` tab (case-insensitive, trimmed). If a name has no matching handle, output the raw name followed by a marker rather than dropping it (a note, if any, follows the marker):
 
 ```
 Recap: @handle1, Staffer 2 (no handle on file)
@@ -251,7 +262,7 @@ Sometimes free text, e.g.:
 ```
 When the value is not a Date, **pass the raw string through** with newlines collapsed to spaces. Do not attempt to parse it. (In practice these appear on non-game rows, which are filtered out anyway — but handle it defensively.)
 
-### 3.7 Deliverables — columns G–O
+### 3.7 Deliverables — columns G–P
 
 Collect the columns marked `Yes` and map to display labels:
 
@@ -265,11 +276,14 @@ const DELIVERABLE_LABELS = {
   L: 'POTG',
   M: 'Album Caption',
   N: 'Recap',
-  O: 'IGs',
+  O: 'Article Slides',
+  P: 'IGs',
 };
 ```
 
 Note two renames from the sheet headers: `Album` → `Album Caption`, `Recap Article` → `Recap`. Column G (`Game day`) **is** included in this list as `Game Day` — note it is still **not** used for event filtering (§3.3); the two roles are independent.
+
+`Article Slides` (column O) was inserted between `Recap Article` and `IGs` partway through Season 88, which is what pushed the photo and staffer columns one to the right (§2.1). The list is stored as an array in Parser.js; its length is what positions the staffer columns, so it must contain exactly one label per flag column, in sheet order.
 
 Join with `, ` in column order.
 
@@ -340,15 +354,15 @@ Send with `parse_mode: 'HTML'` (safer than Markdown — Telegram's legacy Markdo
 |---|---|
 | `HN` is a deliverable | `Pls send HN at least 30 min before the game starts!` |
 | `Buzzer` is a deliverable | `And pls prep buzzer before the game ends!` |
-| Column Q empty, `Recap Article` (+12) is `Yes` | `⚠️ Recap: UNASSIGNED` |
-| Column R empty, `Livetweet` (+7) is `Yes` | `⚠️ Livetweet: UNASSIGNED` |
-| Column Q or R empty, its flag is `No` | *(the line is dropped entirely)* |
+| Column R empty, `Recap Article` (+12) is `Yes` | `⚠️ Recap: UNASSIGNED` |
+| Column S empty, `Livetweet` (+7) is `Yes` | `⚠️ Livetweet: UNASSIGNED` |
+| Column R or S empty, its flag is `No` | *(the line is dropped entirely)* |
 
 The HN and Buzzer reminders are emitted **only** when those deliverables are checked. Both, one, or neither may appear.
 
 Unassigned warnings replace the corresponding `Recap:`/`Livetweet:` line rather than appearing alongside it.
 
-**A blank staffer cell is only a problem when the deliverable was asked for.** `Livetweet` names two different columns — the Yes/No flag at +7 and the staffer names at +16 — and they must be read together. A game flagged `Livetweet: No` has nobody in column R *because there is nothing to assign*; warning about it is a false alarm that trains people to ignore the warning. `missingStafferAssignments_` (Template.js) is the single predicate for this, shared with the admin summary (§6.1) so the roll call and the nightly report can never disagree about what is missing.
+**A blank staffer cell is only a problem when the deliverable was asked for.** `Livetweet` names two different columns — the Yes/No flag at +7 and the staffer names at +17 — and they must be read together. A game flagged `Livetweet: No` has nobody in column S *because there is nothing to assign*; warning about it is a false alarm that trains people to ignore the warning. `missingStafferAssignments_` (Template.js) is the single predicate for this, shared with the admin summary (§6.1) so the roll call and the nightly report can never disagree about what is missing.
 
 The flag only decides what happens when the cell is **empty**. A staffer named against a `No` flag is still rendered: an explicit assignment outranks the flag, and silently hiding a tagged person would be the worse failure.
 

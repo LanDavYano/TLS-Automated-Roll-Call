@@ -104,7 +104,7 @@ The script is bound to the **Coverage Tracker** Google Sheet, and by default rea
 ### Month tabs (`September`, `October`, …)
 - Named **exactly** the English month, **no year**. This naming is load-bearing — don't rename them.
 - Data starts at **row 5** (rows 1–4 are headers).
-- Key columns, **on a tracker whose Date block starts at B** (`DATA_START_COLUMN = B`): **B** day, **C** weekday, **D** time, **E** event name (`Sport: DLSU vs OPPONENT`), **F** venue, **G–O** deliverable flags, **P** photo (ignored), **Q** Recap staffers, **R** Livetweet staffers.
+- Key columns, **on a tracker whose Date block starts at B** (`DATA_START_COLUMN = B`): **B** day, **C** weekday, **D** time, **E** event name (`Sport: DLSU vs OPPONENT`), **F** venue, **G–P** deliverable flags (Game day, HN, Livetweet, HT, Buzzer, POTG, Album, Recap Article, Article Slides, IGs), **Q** photo (ignored), **R** Recap staffers, **S** Livetweet staffers.
 - Those positions are **relative to the Date block**, not absolute. A tracker without the spacer column in A sets `DATA_START_COLUMN = A` and every column above shifts one to the left — no code change. Run `testLayout()` to see exactly which column each field resolved to. This is what lets one script read trackers built by different editors.
 - **Every row with an event name gets a roll call.** Games, ceremonies, awardings, press conferences, and tournament days (`Fencing Day 1`, `Golf Day 2`) all count. The `Game day` column is **not** used — in the live tracker it reads `No` on most real games.
 - Nothing is silently dropped: an event whose name matches no `Groups` keyword goes to the **admin chat** with a warning, so you see it rather than losing it.
@@ -113,7 +113,7 @@ The script is bound to the **Coverage Tracker** Google Sheet, and by default rea
 Key/Value pairs the bot reads live on every run. Run `setupConfigTab()` once to create and populate it with descriptions. See §7 for what each key does.
 
 ### `Staffers` tab
-`Name | Handle`, one per row (row 1 is the header). Names must match what's typed in columns Q/R (case-insensitive, whitespace-trimmed). Add staffers by adding rows — no code change. See §7.
+`Name | Handle`, one per row (row 1 is the header). Names must match what's typed in the Recap/Livetweet staffer columns (case-insensitive, whitespace-trimmed). A note in parentheses after a name — `Lance (ol), David` — is ignored for matching and shown after the handle in the roll call (`@lancej (ol)`), so mark online coverage that way freely. Add staffers by adding rows — no code change. See §7.
 
 ### `Groups` tab
 `Sport keyword(s) | Chat ID | Thread ID | Notes | Group title | Last updated | Active | Mode`. Maps each sport to the Telegram group + Roll Call topic its roll calls post to, and how many messages a day makes. **Normally you never touch this tab** — `/rollsetup` writes it from inside Telegram (§7.2). Hand-editing still works; it's read live on every run. See §7.1.
@@ -409,7 +409,8 @@ The Run button can't pass arguments, so the date-based helpers default to `TEST_
 | **A game is skipped unexpectedly** | Its event name has no `DLSU vs X` opponent, or it already shows `SENT` in `_log` (run `resetLog` to re-send). |
 | **⚠️ A whole tab produces nothing, on a sheet you just pointed at** | The column layout probably differs. Run `testLayout()` — if `DAY` shows `"Mon"` instead of a number, set `DATA_START_COLUMN` (§7) to the column letter holding the day number. Reading one column off makes every row forward-fill from a null date, so nothing ever matches and nothing errors. |
 | **Wrong time shown** | The time is formatted in the *spreadsheet's* timezone. If the spreadsheet's timezone setting is wrong, the displayed (and posted) time will be too. |
-| **A staffer shows "no handle on file"** | The name in the Recap/Livetweet cell doesn't match any `Name` in the Staffers tab, or that row's Handle is blank. |
+| **A staffer shows "no handle on file"** | The name in the Recap/Livetweet cell doesn't match any `Name` in the Staffers tab, or that row's Handle is blank. A note in parentheses (`Lance (ol)`) is *not* the cause — it's stripped before matching — but anything else after the name (`Lance - online`) is. |
+| **Deliverables line is missing `Article Slides`, or Recap/Livetweet staffers look shifted** | The deliverable columns and the staffer columns are positioned by count (`DELIVERABLE_LABELS` in Parser.js). If a flag column was added or removed in the sheet, that list must match it exactly, in order. Run `testLayout()` — it prints which column each field resolved to. |
 | **`⚠️ Livetweet: UNASSIGNED` on a game nobody livetweets** | Two columns are named `Livetweet`: the `Yes`/`No` deliverable flag and the staffer names further right. The warning now fires only when the flag says `Yes`, so check the flag — if it reads `No` and you still see the warning, someone is named in the staffer cell. |
 | **Error alert in Telegram** | Open the `_log` tab — the `ERROR` row's Detail column has the message/stack. |
 | **Bot stopped after "working fine"** | Check `_log` for recent `ERROR` rows; check the trigger still exists; check the group didn't become a supergroup. |
